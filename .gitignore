@@ -1,0 +1,7 @@
+# Ignored files
+
+ignore/
+run.sh
+__pycache__/
+logs/dcgm
+logs/slurm
