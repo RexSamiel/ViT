@@ -1,13 +1,14 @@
-import os, json
-from PIL import Image
+import os
+
+import numpy as np
+import timm
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
-import timm
-from tqdm import tqdm
+from torch.utils.data import DataLoader
 
-from fault_injection import inject_fault   # import your fault injector
+from dataset_loader import ImageNetValDataset
+from fault_injection import inject_fault
 
 # Config
 root_dir = "/gpfs/mariana/home/svloor/Documents/vit/data/imagenet"
@@ -15,48 +16,19 @@ model_name = "vit_base_patch16_224"
 batch_size = 128
 num_workers = min(4, os.cpu_count() or 2)
 use_amp = True
-max_batches = None  
+max_batches = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Dataset
-class ImageNetValDataset(torch.utils.data.Dataset):
-    def __init__(self, root, split, transform=None):
-        self.samples, self.targets = [], []
-        self.transform = transform
-        self.syn_to_class = {}
-
-        with open(os.path.join(root, "imagenet_class_index.json"), "r") as f:
-            json_file = json.load(f)
-            for class_id, v in json_file.items():
-                self.syn_to_class[v[0]] = int(class_id)
-
-        with open(os.path.join(root, "ILSVRC2012_val_labels.json"), "r") as f:
-            self.val_to_syn = json.load(f)
-
-        samples_dir = os.path.join(root, "ILSVRC/Data/CLS-LOC", split)
-        for entry in os.listdir(samples_dir):
-            syn_id = self.val_to_syn[entry]
-            target = self.syn_to_class[syn_id]
-            self.samples.append(os.path.join(samples_dir, entry))
-            self.targets.append(target)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        img = Image.open(self.samples[idx]).convert("RGB")
-        if self.transform:
-            img = self.transform(img)
-        return img, self.targets[idx]
-
-# Transform
-transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
+transform = transforms.Compose(
+    [
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+        ),
+    ]
+)
 
 # Create model
 model = timm.create_model(model_name, pretrained=True).to(device)
@@ -65,54 +37,87 @@ print(f"Using device: {device}")
 print(f"Model loaded: {model_name}")
 
 # fault injection
-num_faults = 100
-
-for _ in tqdm(range(num_faults), desc="Injecting faults"):
-    inject_fault(model, component_type="attention")
+inject_fault(model, component_type="attention")
 
 # loader
 val_dataset = ImageNetValDataset(root_dir, "val", transform)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                        num_workers=num_workers, pin_memory=True)
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=batch_size,
+    shuffle=False,
+    num_workers=num_workers,
+    pin_memory=True,
+)
 
-# accuracy
-criterion = nn.CrossEntropyLoss()
-total_loss, total_samples, top1_correct, top5_correct = 0.0, 0, 0, 0
 
-with torch.no_grad():
-    for batch_idx, (images, labels) in enumerate(tqdm(val_loader, desc="Validating", total=len(val_loader))):
-        if max_batches and batch_idx >= max_batches:
-            break
-        images, labels = images.to(device), labels.to(device)
+def run_model():
+    logits_list = []
+    labels_list = []
+    losses_list = []
 
-        with torch.amp.autocast(device_type='cuda', enabled=use_amp):
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+    criterion = nn.CrossEntropyLoss()
 
+    with torch.no_grad():
+        for batch_idx, (images, labels) in enumerate(val_loader):
+            if max_batches and batch_idx >= max_batches:
+                break
+
+            images, labels = images.to(device), labels.to(device)
+
+            with torch.autocast(device_type="cuda", enabled=use_amp):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+
+            # Store everything on CPU
+            logits_list.append(outputs.cpu())
+            labels_list.append(labels.cpu())
+            losses_list.append(loss.item())
+
+    top_metrics(logits_list, labels_list)
+
+
+def top_metrics(logits_list, labels_list):
+    """
+    Compute Top-1 and Top-5 accuracy metrics.
+    """
+    top1_list = []
+    top5_list = []
+
+    for outputs, labels in zip(logits_list, labels_list):
         _, predicted = torch.max(outputs, 1)
         _, top5_pred = torch.topk(outputs, 5, dim=1)
 
-        total_samples += labels.size(0)
-        total_loss += loss.item() * labels.size(0)
-        top1_correct += (predicted == labels).sum().item()
-        top5_correct += (labels.unsqueeze(1) == top5_pred).any(dim=1).sum().item()
-        
-        print(f"Pred={predicted[0].item()}, Label={labels[0].item()}")
+        top1_list.append((predicted == labels).numpy())
+        top5_list.append(
+            ((top5_pred == labels.unsqueeze(1)).any(dim=1)).numpy()
+        )
 
-top1_acc = (top1_correct / total_samples) * 100
-top5_acc = (top5_correct / total_samples) * 100
-avg_loss = total_loss / total_samples
+    top1_all = np.concatenate(top1_list)
+    top5_all = np.concatenate(top5_list)
 
-print("\n=== FINAL RESULTS ===")
-print(f"Samples: {total_samples}")
-print(f"Top-1 Accuracy: {top1_acc:.2f}%")
-print(f"Top-5 Accuracy: {top5_acc:.2f}%")
-print(f"Average Loss: {avg_loss:.4f}")
+    metrics = {
+        "top1_avg": float(top1_all.mean()),
+        "top1_best": float(top1_all.max()),
+        "top1_worst": float(top1_all.min()),
+        "top5_avg": float(top5_all.mean()),
+        "top5_best": float(top5_all.max()),
+        "top5_worst": float(top5_all.min()),
+    }
 
-with open("results.txt", "w") as f:
-    f.write(f"Evaluated {total_samples} samples\n")
-    f.write(f"Top-1 Accuracy: {top1_acc:.2f}%\n")
-    f.write(f"Top-5 Accuracy: {top5_acc:.2f}%\n")
-    f.write(f"Average Loss: {avg_loss:.4f}\n\n")
+    print("\n=== TOP-K METRICS ===")
+    print(
+        f"Top-1 Accuracy: Avg={metrics['top1_avg']*100:.2f}%, "
+        f"Best={metrics['top1_best']*100:.2f}%, "
+        f"Worst={metrics['top1_worst']*100:.2f}%"
+    )
+    print(
+        f"Top-5 Accuracy: Avg={metrics['top5_avg']*100:.2f}%, "
+        f"Best={metrics['top5_best']*100:.2f}%, "
+        f"Worst={metrics['top5_worst']*100:.2f}%\n"
+    )
 
-print(f"\nResults saved to results.txt")
+    return metrics
+
+
+if __name__ == "__main__":
+    run_model()
