@@ -1,0 +1,5 @@
+Evaluated 50000 samples
+Top-1 Accuracy: 81.10%
+Top-5 Accuracy: 95.73%
+Average Loss: 0.7771
+

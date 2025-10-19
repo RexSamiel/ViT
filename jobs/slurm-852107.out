@@ -1,0 +1,4 @@
+  File "/gpfs/mariana/home/svloor/Documents/vit/models/vit-base-patch16-224/main.py", line 67
+    for _ in range(1000)
+                        ^
+SyntaxError: expected ':'

@@ -1,0 +1,11 @@
+MaxDiskWrite  0.00M 0.00M 
+Job ID: 852133
+State: FAILED (exit code 1)
+Nodelist: amp1
+Cores per node: 2
+CPU Utilized: 00:00:05
+CPU Efficiency: 8.62% of 00:00:58 core-walltime
+Job Wall-clock time: 00:00:29
+Memory Utilized: 3.38 MB
+Memory Efficiency: 0.02% of 20.00 GB
+Command=./vit-large-patch16-224.sh

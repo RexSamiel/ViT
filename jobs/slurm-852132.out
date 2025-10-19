@@ -1,0 +1,4 @@
+  File "/gpfs/mariana/home/svloor/Documents/vit/models/vit-base-patch16-224/main.py", line 83
+    for batch_idx, (images, labels) in enumerate(tqdm(val_loader, desc="Validating", total=len(val_loader)):
+                                                                                                           ^
+SyntaxError: invalid syntax

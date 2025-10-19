@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/gpfs/mariana/home/svloor/Documents/vit/models/vit-base-patch16-224/main.py", line 8, in <module>
+    import tdqm
+ModuleNotFoundError: No module named 'tdqm'

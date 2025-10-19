@@ -1,0 +1,11 @@
+MaxDiskWrite  0.40M 0.00M 
+Job ID: 852108
+State: COMPLETED (exit code 0)
+Nodelist: amp1
+Cores per node: 2
+CPU Utilized: 00:07:01
+CPU Efficiency: 91.52% of 00:07:40 core-walltime
+Job Wall-clock time: 00:03:50
+Memory Utilized: 4.46 GB
+Memory Efficiency: 22.32% of 20.00 GB
+Command=./vit-large-patch16-224.sh

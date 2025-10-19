@@ -1,0 +1,10 @@
+Mode: FAULTY
+Samples: 50000
+Top-1 Accuracy: 81.09%
+Top-5 Accuracy: 95.73%
+Average Loss: 0.7772
+
+SDC Rate: 74.93%
+SDC Magnitude (avg): 0.0005
+SDC Magnitude (min): 0.0000
+SDC Magnitude (max): 0.0027

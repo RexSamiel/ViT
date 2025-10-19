@@ -1,0 +1,5 @@
+Mode: FAULTFREE
+Samples: 50000
+Top-1 Accuracy: 81.10%
+Top-5 Accuracy: 95.72%
+Average Loss: 0.7772

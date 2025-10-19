@@ -7,9 +7,6 @@
 #SBATCH --cpus-per-task=4           ### Number of CPU cores for dataloading
 #SBATCH --gres=gpu:1                ### Request 1 GPU
 #SBATCH --mem=20G                   ### RAM
-#SBATCH --output=/home/samiel/Documents/ViT/logs/dcgm/myjob_%j.out
-#SBATCH --error=/home/samiel/Documents/ViT/logs/slurm/myjob_%j.err
-
 source /gpfs/mariana/home/svloor/Documents/vit/common/vit_env/bin/activate
-cd /gpfs/mariana/home/svloor/Documents/vit/models/vit-base-patch16-224
-python main.py --epochs 10 --batch-size 32
+cd /gpfs/mariana/home/svloor/Documents/vit/
+python main.py --faulty --metrics
