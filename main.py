@@ -1,28 +1,72 @@
-import argparse
-import os
-from dataclasses import dataclass
-from pathlib import Path
-
-import timm
 import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
+import argparse
+import os
+from pathlib import Path
+from dataclasses import dataclass
+import timm
 
 from dataset_loader import ImageNetValDataset
 from fault_injection import inject_fault
 
 
+SUPPORTED_MODELS = {
+    # Vision Transformer models
+    "vit_tiny": "vit_tiny_patch16_224",
+    "vit_small": "vit_small_patch16_224",
+    "vit_base": "vit_base_patch16_224",
+    "vit_large": "vit_large_patch16_224",
+    "vit_huge": "vit_huge_patch14_224",
+    # Swin Transformer models
+    "swin_tiny": "swin_tiny_patch4_window7_224",
+    "swin_small": "swin_small_patch4_window7_224",
+    "swin_base": "swin_base_patch4_window7_224",
+    "swin_large": "swin_large_patch4_window7_224",
+    # BEiT models
+    "beit_base": "beit_base_patch16_224",
+    "beit_large": "beit_large_patch16_224",
+}
+
+
+def print_supported_models():
+    print("\n" + "=" * 60)
+    print("SUPPORTED MODELS")
+    print("=" * 60)
+
+    print("\nVision Transformer (ViT):")
+    print("  - vit_tiny")
+    print("  - vit_small")
+    print("  - vit_base")
+    print("  - vit_large")
+    print("  - vit_huge")
+
+    print("\nSwin Transformer:")
+    print("  - swin_tiny")
+    print("  - swin_small")
+    print("  - swin_base")
+    print("  - swin_large")
+
+    print("\nBEiT:")
+    print("  - beit_base")
+    print("  - beit_large")
+
+    print("\n" + "=" * 60)
+    print("Usage: python script.py --model <model_name> [options]")
+    print("Example: python script.py --model vit_base --faultfree --metrics")
+    print("=" * 60 + "\n")
+
+
 @dataclass
 class Config:
-    """Configuration for model evaluation."""
-
     root_dir: str = "/gpfs/mariana/home/svloor/Documents/vit/data/imagenet"
     model_name: str = "vit_base_patch16_224"
-    batch_size: int = 128
+    model_key: str = "vit_base"
+    batch_size: int = 50
     num_workers: int = min(4, os.cpu_count() or 2)
     use_amp: bool = True
-    max_batches: int | None = None
+    max_batches: int | None = 10
 
     @property
     def device(self):
@@ -30,8 +74,6 @@ class Config:
 
 
 class MetricsTracker:
-    """Track and compute evaluation metrics."""
-
     def __init__(self):
         self.reset()
 
@@ -61,7 +103,6 @@ class MetricsTracker:
         self.total_samples += batch_size
 
     def update_sdc(self, faulty_outputs, ff_logits):
-        """Update SDC metrics for a batch."""
         diff = ff_logits - faulty_outputs
         sdc_rate = (diff != 0).float().mean(dim=1)
         sdc_magnitude = diff.abs().mean(dim=1)
@@ -94,36 +135,32 @@ class MetricsTracker:
 
 
 class FaultFreeLogits:
-    """Manage fault-free logits storage and loading."""
-
-    FILENAME = "ff_logits.pt"
-
-    def __init__(self):
+    def __init__(self, model_key):
+        self.filename = f"ff_logits_{model_key}.pt"
         self.data = None
         self.load()
 
     def load(self):
-        """Load fault-free logits if available."""
-        if Path(self.FILENAME).exists():
-            self.data = torch.load(self.FILENAME, weights_only=False)
-            print("✓ Fault-free logits loaded")
+        if Path(self.filename).exists():
+            self.data = torch.load(self.filename, weights_only=False)
+            print(f"✓ Fault-free logits loaded from {self.filename}")
         else:
-            print("✗ Fault-free logits not found. Run with --faultfree --logits first.")
+            print(
+                f"✗ Fault-free logits not found. Run with --faultfree --logits first."
+            )
 
     def save(self, logits, labels):
-        """Save fault-free logits and labels."""
         torch.save(
             {"logits": torch.cat(logits), "labels": torch.cat(labels)},
-            self.FILENAME,
+            self.filename,
         )
-        print(f"✓ Fault-free logits saved to {self.FILENAME}")
+        print(f"✓ Fault-free logits saved to {self.filename}")
 
     def get_batch(self, batch_idx, batch_size, actual_size, device):
-        """Get fault-free logits for a specific batch."""
         if self.data is None:
             raise RuntimeError(
                 "Fault-free logits required for SDC computation. "
-                "Run: python script.py --faultfree --logits"
+                "Run: python script.py --model <model> --faultfree --logits"
             )
 
         start = batch_idx * batch_size
@@ -136,25 +173,23 @@ class FaultFreeLogits:
 
 
 class ModelEvaluator:
-    """Evaluate Vision Transformer with optional fault injection."""
-
     def __init__(self, config):
         self.config = config
         self.model = self._load_model()
         self.dataloader = self._create_dataloader()
         self.criterion = nn.CrossEntropyLoss()
-        self.ff_logits = FaultFreeLogits()
+        self.ff_logits = FaultFreeLogits(config.model_key)
 
     def _load_model(self):
-        """Load and prepare the model."""
+        print(f"Loading model: {self.config.model_name}")
         model = timm.create_model(self.config.model_name, pretrained=True).to(
             self.config.device
         )
         model.eval()
+        print(f"✓ Model loaded successfully on {self.config.device}")
         return model
 
     def _create_dataloader(self):
-        """Create validation dataloader with transforms."""
         transform = transforms.Compose(
             [
                 transforms.Resize(256),
@@ -177,7 +212,6 @@ class ModelEvaluator:
         )
 
     def run(self, mode="faultfree", compute_metrics=False, save_logits=False):
-        """Run model evaluation."""
         if mode == "faulty":
             inject_fault(self.model, component_type="attention", verbose=True)
             print("✓ Fault injection applied to attention components")
@@ -194,17 +228,14 @@ class ModelEvaluator:
                 images = images.to(self.config.device, non_blocking=True)
                 labels = labels.to(self.config.device, non_blocking=True)
 
-                # Forward pass
                 with torch.autocast(device_type="cuda", enabled=self.config.use_amp):
                     outputs = self.model(images)
                     loss = self.criterion(outputs, labels)
 
-                # Save logits for fault-free run
                 if save_logits and mode == "faultfree":
                     logits_buffer.append(outputs.cpu())
                     labels_buffer.append(labels.cpu())
 
-                # Compute metrics
                 if compute_metrics:
                     metrics.update_accuracy(outputs, labels, loss)
 
@@ -217,7 +248,6 @@ class ModelEvaluator:
                         )
                         metrics.update_sdc(outputs, ff_batch)
 
-        # Save results
         if save_logits and logits_buffer:
             self.ff_logits.save(logits_buffer, labels_buffer)
 
@@ -225,14 +255,13 @@ class ModelEvaluator:
             self._print_results(mode, metrics.get_results())
 
     def _print_results(self, mode, results):
-        """Print and save evaluation results."""
         if results is None:
             print("No samples evaluated")
             return
 
-        # Console output
         print("\n" + "=" * 50)
         print(f"RESULTS - {mode.upper()} MODE")
+        print(f"Model: {self.config.model_key} ({self.config.model_name})")
         print("=" * 50)
         print(f"Samples:        {results['samples']}")
         print(f"Top-1 Accuracy: {results['top1_acc']:.2f}%")
@@ -249,9 +278,9 @@ class ModelEvaluator:
 
         print("=" * 50 + "\n")
 
-        # File output
-        output_file = f"results_{mode}.txt"
+        output_file = f"results_{self.config.model_key}_{mode}.txt"
         with open(output_file, "w") as f:
+            f.write(f"Model: {self.config.model_key} ({self.config.model_name})\n")
             f.write(f"Mode: {mode.upper()}\n")
             f.write(f"Samples: {results['samples']}\n")
             f.write(f"Top-1 Accuracy: {results['top1_acc']:.2f}%\n")
@@ -268,9 +297,13 @@ class ModelEvaluator:
 
 
 def main():
-    """Main entry point."""
     parser = argparse.ArgumentParser(
         description="Vision Transformer fault injection evaluation"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        help="Model to evaluate (e.g., vit_base, swin_small, beit_large)",
     )
     parser.add_argument(
         "--faultfree", action="store_true", help="Run fault-free evaluation"
@@ -293,11 +326,23 @@ def main():
 
     args = parser.parse_args()
 
+    if not args.model:
+        print_supported_models()
+        return
+
+    if args.model not in SUPPORTED_MODELS:
+        print(f"\n❌ Error: '{args.model}' is not a supported model.")
+        print_supported_models()
+        return
+
     if not (args.faultfree or args.faulty):
         print("Please specify --faultfree or --faulty")
         return
 
     config = Config()
+    config.model_key = args.model
+    config.model_name = SUPPORTED_MODELS[args.model]
+
     evaluator = ModelEvaluator(config)
 
     mode = "faultfree" if args.faultfree else "faulty"
