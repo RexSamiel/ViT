@@ -23,7 +23,6 @@ def flip_random_bit(value: torch.Tensor) -> tuple[torch.Tensor, int, str, str]:
 
 
 def format_ieee754_bits(bits_str: str) -> str:
-    """Format 32-bit string into IEEE 754 sections with labels."""
     sign = bits_str[0]
     exponent = bits_str[1:9]
     mantissa = bits_str[9:]

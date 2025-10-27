@@ -1,3 +1,7 @@
+from pathlib import Path
+import torch
+
+
 class FaultFreeLogits:
     def __init__(self, model_key):
         self.filename = f"ff_logits_{model_key}.pt"

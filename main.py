@@ -8,7 +8,6 @@ from pathlib import Path
 from dataclasses import dataclass
 import timm
 from functools import wraps
-from logits import FaultFreeLogits
 
 from dataset_loader import ImageNetValDataset
 from fault_injection import inject_fault
@@ -55,8 +54,8 @@ def print_supported_models():
     print("  - beit_large")
 
     print("\n" + "=" * 60)
-    print("Usage: python script.py --model <model_name> [options]")
-    print("Example: python script.py --model vit_base --faultfree --metrics")
+    print("Usage: python main.py --model <model_name> [options]")
+    print("Example: python main.py --model vit_base --faultfree --metrics")
     print("=" * 60 + "\n")
 
 
@@ -105,8 +104,12 @@ class MetricsTracker:
         self.total_samples += batch_size
 
     def update_sdc(self, faulty_outputs, ff_logits):
+        # Calculate difference: fault-free - faulty
         diff = ff_logits - faulty_outputs
+        # SDC rate: percentage of logits that changed per sample
         sdc_rate = (diff != 0).float().mean(dim=1)
+
+        # SDC magnitude: average absolute difference per sample
         sdc_magnitude = diff.abs().mean(dim=1)
 
         self.sdc_rates.append(sdc_rate.cpu())
@@ -131,6 +134,40 @@ class MetricsTracker:
             results["msdc_avg"] = msdc_tensor.mean().item()
 
         return results
+
+
+class FaultFreeLogits:
+    def __init__(self, model_key):
+        self.filename = f"ff_logits_{model_key}.pt"
+        self.data = None
+        self.load()
+
+    def load(self):
+        if Path(self.filename).exists():
+            self.data = torch.load(self.filename, weights_only=False)
+            print(f"✓ Fault-free logits loaded from {self.filename}")
+        else:
+            print(
+                f"✗ Fault-free logits not found. Generate them first using logits.py:"
+            )
+            print(
+                f"  python logits.py --model {Path(self.filename).stem.replace('ff_logits_', '')}"
+            )
+
+    def get_batch(self, batch_idx, batch_size, actual_size, device):
+        if self.data is None:
+            raise RuntimeError(
+                "Fault-free logits required for SDC computation. "
+                "Generate them first: python logits.py --model <model>"
+            )
+
+        start = batch_idx * batch_size
+        end = start + actual_size
+        return self.data["logits"][start:end].to(device)
+
+    @property
+    def available(self):
+        return self.data is not None
 
 
 class ModelEvaluator:
@@ -172,14 +209,12 @@ class ModelEvaluator:
             pin_memory=True,
         )
 
-    def run(self, mode="faultfree", compute_metrics=False, save_logits=False):
+    def run(self, mode="faultfree", compute_metrics=False):
         if mode == "faulty":
             inject_fault(self.model, component_type="attention", verbose=True)
             print("✓ Fault injection applied to attention components")
 
         metrics = MetricsTracker()
-        logits_buffer = []
-        labels_buffer = []
 
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(self.dataloader):
@@ -193,10 +228,6 @@ class ModelEvaluator:
                     outputs = self.model(images)
                     loss = self.criterion(outputs, labels)
 
-                if save_logits and mode == "faultfree":
-                    logits_buffer.append(outputs.cpu())
-                    labels_buffer.append(labels.cpu())
-
                 if compute_metrics:
                     metrics.update_accuracy(outputs, labels, loss)
 
@@ -207,10 +238,8 @@ class ModelEvaluator:
                             outputs.size(0),
                             self.config.device,
                         )
+                        # Pass faulty outputs first, then fault-free logits
                         metrics.update_sdc(outputs, ff_batch)
-
-        if save_logits and logits_buffer:
-            self.ff_logits.save(logits_buffer, labels_buffer)
 
         if compute_metrics:
             self._print_results(mode, metrics.get_results())
@@ -275,11 +304,6 @@ def main():
         action="store_true",
         help="Compute accuracy and SDC metrics",
     )
-    parser.add_argument(
-        "--logits",
-        action="store_true",
-        help="Save fault-free logits for later comparison",
-    )
 
     args = parser.parse_args()
 
@@ -303,7 +327,7 @@ def main():
     evaluator = ModelEvaluator(config)
 
     mode = "faultfree" if args.faultfree else "faulty"
-    evaluator.run(mode=mode, compute_metrics=args.metrics, save_logits=args.logits)
+    evaluator.run(mode=mode, compute_metrics=args.metrics)
 
 
 if __name__ == "__main__":
