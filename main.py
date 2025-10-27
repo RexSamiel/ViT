@@ -7,19 +7,21 @@ import os
 from pathlib import Path
 from dataclasses import dataclass
 import timm
+from functools import wraps
+from logits import FaultFreeLogits
 
 from dataset_loader import ImageNetValDataset
 from fault_injection import inject_fault
 
 
 SUPPORTED_MODELS = {
-    # Vision Transformer models
+    # ViT models
     "vit_tiny": "vit_tiny_patch16_224",
     "vit_small": "vit_small_patch16_224",
     "vit_base": "vit_base_patch16_224",
     "vit_large": "vit_large_patch16_224",
     "vit_huge": "vit_huge_patch14_224",
-    # Swin Transformer models
+    # Swin models
     "swin_tiny": "swin_tiny_patch4_window7_224",
     "swin_small": "swin_small_patch4_window7_224",
     "swin_base": "swin_base_patch4_window7_224",
@@ -63,10 +65,10 @@ class Config:
     root_dir: str = "/gpfs/mariana/home/svloor/Documents/vit/data/imagenet"
     model_name: str = "vit_base_patch16_224"
     model_key: str = "vit_base"
-    batch_size: int = 50
+    batch_size: int = 100
     num_workers: int = min(4, os.cpu_count() or 2)
     use_amp: bool = True
-    max_batches: int | None = 10
+    max_batches: int | None = 50
 
     @property
     def device(self):
@@ -111,7 +113,6 @@ class MetricsTracker:
         self.sdc_magnitudes.append(sdc_magnitude.cpu())
 
     def get_results(self):
-        """Get final computed metrics."""
         if self.total_samples == 0:
             return None
 
@@ -128,48 +129,8 @@ class MetricsTracker:
 
             results["sdc_rate"] = 100 * sdc_tensor.mean().item()
             results["msdc_avg"] = msdc_tensor.mean().item()
-            results["msdc_min"] = msdc_tensor.min().item()
-            results["msdc_max"] = msdc_tensor.max().item()
 
         return results
-
-
-class FaultFreeLogits:
-    def __init__(self, model_key):
-        self.filename = f"ff_logits_{model_key}.pt"
-        self.data = None
-        self.load()
-
-    def load(self):
-        if Path(self.filename).exists():
-            self.data = torch.load(self.filename, weights_only=False)
-            print(f"✓ Fault-free logits loaded from {self.filename}")
-        else:
-            print(
-                f"✗ Fault-free logits not found. Run with --faultfree --logits first."
-            )
-
-    def save(self, logits, labels):
-        torch.save(
-            {"logits": torch.cat(logits), "labels": torch.cat(labels)},
-            self.filename,
-        )
-        print(f"✓ Fault-free logits saved to {self.filename}")
-
-    def get_batch(self, batch_idx, batch_size, actual_size, device):
-        if self.data is None:
-            raise RuntimeError(
-                "Fault-free logits required for SDC computation. "
-                "Run: python script.py --model <model> --faultfree --logits"
-            )
-
-        start = batch_idx * batch_size
-        end = start + actual_size
-        return self.data["logits"][start:end].to(device)
-
-    @property
-    def available(self):
-        return self.data is not None
 
 
 class ModelEvaluator:
@@ -273,8 +234,6 @@ class ModelEvaluator:
             print("-" * 50)
             print(f"SDC Rate:            {results['sdc_rate']:.2f}%")
             print(f"SDC Magnitude (avg): {results['msdc_avg']:.4f}")
-            print(f"SDC Magnitude (min): {results['msdc_min']:.4f}")
-            print(f"SDC Magnitude (max): {results['msdc_max']:.4f}")
 
         print("=" * 50 + "\n")
 
@@ -290,8 +249,6 @@ class ModelEvaluator:
             if "sdc_rate" in results:
                 f.write(f"\nSDC Rate: {results['sdc_rate']:.2f}%\n")
                 f.write(f"SDC Magnitude (avg): {results['msdc_avg']:.4f}\n")
-                f.write(f"SDC Magnitude (min): {results['msdc_min']:.4f}\n")
-                f.write(f"SDC Magnitude (max): {results['msdc_max']:.4f}\n")
 
         print(f"✓ Results saved to {output_file}")
 
@@ -331,7 +288,7 @@ def main():
         return
 
     if args.model not in SUPPORTED_MODELS:
-        print(f"\n❌ Error: '{args.model}' is not a supported model.")
+        print(f"\n Error: '{args.model}' is not a supported model.")
         print_supported_models()
         return
 

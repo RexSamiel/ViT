@@ -22,6 +22,18 @@ def flip_random_bit(value: torch.Tensor) -> tuple[torch.Tensor, int, str, str]:
     return corrupted_value, rand_bit, original_bits, corrupted_bits
 
 
+def format_ieee754_bits(bits_str: str) -> str:
+    """Format 32-bit string into IEEE 754 sections with labels."""
+    sign = bits_str[0]
+    exponent = bits_str[1:9]
+    mantissa = bits_str[9:]
+
+    header = "Sign  Exponent   Mantissa                  "
+    values = f" {sign}    {exponent}  {mantissa}"
+
+    return f"{header}\n{values}"
+
+
 def inject_fault(
     model, component_type="attention", block_idx=None, idx=None, verbose=True
 ):
@@ -108,9 +120,12 @@ def inject_fault(
         print(f" Bit Flipped    : {fault_info['bit_flipped']}")
         print(f" Original Value : {fault_info['original_value']:.8f}")
         print(f" Corrupted Value: {fault_info['corrupted_value']:.8f}")
-        print(f" Original Bits  : {original_bits}")
-        print(f" Corrupted Bits : {corrupted_bits}")
-        print(f"Bit position legend: [Sign | Exponent | Mantissa]")
+        print()
+        print(" Original Bits:")
+        print(" " + format_ieee754_bits(original_bits).replace("\n", "\n "))
+        print()
+        print(" Corrupted Bits:")
+        print(" " + format_ieee754_bits(corrupted_bits).replace("\n", "\n "))
         print("-" * 80)
 
     return fault_info

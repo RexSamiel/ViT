@@ -5,3 +5,4 @@ run.sh
 __pycache__/
 logs/dcgm
 logs/slurm
+.venv
