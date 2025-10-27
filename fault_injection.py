@@ -3,11 +3,37 @@ import torch
 import numpy as np
 
 
-def flip_random_bit(value: torch.Tensor) -> tuple[torch.Tensor, int, str, str]:
+def parse_bit_range(bit_spec):
+    if isinstance(bit_spec, int):
+        return bit_spec, bit_spec
+    elif isinstance(bit_spec, tuple) and len(bit_spec) == 2:
+        return bit_spec
+    elif isinstance(bit_spec, str) and "..." in bit_spec:
+        parts = bit_spec.split("...")
+        return int(parts[0]), int(parts[1])
+    else:
+        raise ValueError(
+            f"Invalid bit specification: {
+                bit_spec
+            }. Use int, tuple (min, max), or string 'min...max'"
+        )
+
+
+def flip_random_bit(
+    value: torch.Tensor, bit_range=None
+) -> tuple[torch.Tensor, int, str, str]:
     if value.dtype != torch.float32:
         value = value.float()
 
-    rand_bit = random.randint(0, 31)
+    if bit_range is None:
+        rand_bit = random.randint(0, 31)
+    else:
+        min_bit, max_bit = parse_bit_range(bit_range)
+        if not (0 <= min_bit <= max_bit <= 31):
+            raise ValueError(
+                f"Bit range must be within 0-31. Got: {min_bit}...{max_bit}"
+            )
+        rand_bit = random.randint(min_bit, max_bit)
 
     val_int = value.view(torch.int32)
 
@@ -34,7 +60,12 @@ def format_ieee754_bits(bits_str: str) -> str:
 
 
 def inject_fault(
-    model, component_type="attention", block_idx=None, idx=None, verbose=True
+    model,
+    component_type="attention",
+    block_idx=None,
+    idx=None,
+    bit_range=None,
+    verbose=True,
 ):
     available_params = []
 
@@ -91,17 +122,26 @@ def inject_fault(
 
     original_value = param[idx].clone()
     corrupted_value, bit_flipped, original_bits, corrupted_bits = flip_random_bit(
-        original_value
+        original_value, bit_range=bit_range
     )
 
     with torch.no_grad():
         param[idx] = corrupted_value
+
+    if bit_range is None:
+        bit_range_str = "0-31 (any)"
+    elif isinstance(bit_range, int):
+        bit_range_str = f"{bit_range} (specific)"
+    else:
+        min_bit, max_bit = parse_bit_range(bit_range)
+        bit_range_str = f"{min_bit}-{max_bit}"
 
     fault_info = {
         "component_type": component_type,
         "block_idx": block_idx,
         "param_name": param_full_name,
         "fault_idx": idx,
+        "bit_range": bit_range_str,
         "bit_flipped": bit_flipped,
         "original_value": original_value.item(),
         "corrupted_value": corrupted_value.item(),
@@ -116,6 +156,7 @@ def inject_fault(
         print(f" Block Index    : {fault_info['block_idx']}")
         print(f" Parameter Name : {fault_info['param_name']}")
         print(f" Fault Index    : {fault_info['fault_idx']}")
+        print(f" Bit Range      : {fault_info['bit_range']}")
         print(f" Bit Flipped    : {fault_info['bit_flipped']}")
         print(f" Original Value : {fault_info['original_value']:.8f}")
         print(f" Corrupted Value: {fault_info['corrupted_value']:.8f}")
