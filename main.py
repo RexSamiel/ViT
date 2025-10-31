@@ -33,42 +33,45 @@ SUPPORTED_MODELS = {
 
 
 def print_supported_models():
-    print("\n" + "=" * 60)
-    print("SUPPORTED MODELS")
-    print("=" * 60)
+    print("""
+    ============================================================
+    SUPPORTED MODELS
+    ============================================================
 
-    print("\nVision Transformer (ViT):")
-    print("  - vit_tiny")
-    print("  - vit_small")
-    print("  - vit_base")
-    print("  - vit_large")
-    print("  - vit_huge")
+    Vision Transformer (ViT):
+    - vit_tiny
+    - vit_small
+    - vit_base
+    - vit_large
+    - vit_huge
 
-    print("\nSwin Transformer:")
-    print("  - swin_tiny")
-    print("  - swin_small")
-    print("  - swin_base")
-    print("  - swin_large")
+    Swin Transformer:
+    - swin_tiny
+    - swin_small
+    - swin_base
+    - swin_large
 
-    print("\nBEiT:")
-    print("  - beit_base")
-    print("  - beit_large")
+    BEiT:
+    - beit_base
+    - beit_large
 
-    print("\n" + "=" * 60)
-    print("Usage: python script.py --model <model_name> [options]")
-    print("Example: python script.py --model vit_base --faultfree --metrics")
-    print("=" * 60 + "\n")
+    ============================================================
+    Usage: python script.py --model <model_name> [options]
+    Example: python script.py --model vit_base --faultfree --metrics
+    ============================================================
+    """)
 
 
 @dataclass
 class Config:
-    root_dir: str = "/gpfs/mariana/home/svloor/Documents/vit/data/imagenet"
+    # /gpfs/mariana/home/svloor/Documents/vit/data/imagenet"
+    root_dir: str = "/home/samiel/Documents/thesis/ViT/data/imagenet"
     model_name: str = "vit_base_patch16_224"
     model_key: str = "vit_base"
-    batch_size: int = 128  # Default is 128
+    batch_size: int = 64  # Default is 128
     num_workers: int = min(4, os.cpu_count() or 2)
     use_amp: bool = True
-    max_batches: int | None = None  # Default is None
+    max_batches: int | None = 16  # Default is None
 
     @property
     def device(self):
@@ -174,7 +177,9 @@ class ModelEvaluator:
 
     def run(self, mode="faultfree", compute_metrics=False, save_logits=False):
         if mode == "faulty":
-            inject_fault(self.model, component_type="attention", verbose=True)
+            inject_fault(
+                self.model, component_type="attention", verbose=True, bit_range=(20, 21)
+            )
             print("✓ Fault injection applied to attention components")
 
         metrics = MetricsTracker()
@@ -189,7 +194,10 @@ class ModelEvaluator:
                 images = images.to(self.config.device, non_blocking=True)
                 labels = labels.to(self.config.device, non_blocking=True)
 
-                with torch.autocast(device_type="cuda", enabled=self.config.use_amp):
+                with torch.autocast(
+                    device_type="cuda",
+                    enabled=self.config.use_amp,
+                ):
                     outputs = self.model(images)
                     loss = self.criterion(outputs, labels)
 
@@ -233,7 +241,7 @@ class ModelEvaluator:
             print("\nSDC METRICS")
             print("-" * 50)
             print(f"SDC Rate:            {results['sdc_rate']:.2f}%")
-            print(f"SDC Magnitude (avg): {results['msdc_avg']:.4f}")
+            print(f"SDC Magnitude (avg): {results['msdc_avg']:.8f}")
 
         print("=" * 50 + "\n")
 

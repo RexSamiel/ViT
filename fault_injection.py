@@ -25,6 +25,7 @@ def flip_random_bit(
     if value.dtype != torch.float32:
         value = value.float()
 
+    # choose random bit
     if bit_range is None:
         rand_bit = random.randint(0, 31)
     else:
@@ -37,8 +38,8 @@ def flip_random_bit(
 
     val_int = value.view(torch.int32)
 
-    mask_value = np.int32(1 << rand_bit)
-    mask = torch.tensor(mask_value, dtype=torch.int32, device=value.device)
+    mask = torch.tensor(1, dtype=torch.int32, device=value.device) << rand_bit
+
     corrupted_int = val_int ^ mask
     corrupted_value = corrupted_int.view(torch.float32)
 
@@ -49,13 +50,15 @@ def flip_random_bit(
 
 
 def format_ieee754_bits(bits_str: str) -> str:
+    bits_str = bits_str.replace("-", "").replace("+", "")
+    if len(bits_str) != 32:
+        bits_str = bits_str.zfill(32)
+
     sign = bits_str[0]
     exponent = bits_str[1:9]
     mantissa = bits_str[9:]
-
     header = "Sign  Exponent   Mantissa                  "
     values = f" {sign}    {exponent}  {mantissa}"
-
     return f"{header}\n{values}"
 
 
@@ -150,22 +153,24 @@ def inject_fault(
     }
 
     if verbose:
-        print("\n🧩 Fault Injection Details")
-        print("-" * 80)
-        print(f" Component Type : {fault_info['component_type']}")
-        print(f" Block Index    : {fault_info['block_idx']}")
-        print(f" Parameter Name : {fault_info['param_name']}")
-        print(f" Fault Index    : {fault_info['fault_idx']}")
-        print(f" Bit Range      : {fault_info['bit_range']}")
-        print(f" Bit Flipped    : {fault_info['bit_flipped']}")
-        print(f" Original Value : {fault_info['original_value']:.8f}")
-        print(f" Corrupted Value: {fault_info['corrupted_value']:.8f}")
-        print()
-        print(" Original Bits:")
-        print(" " + format_ieee754_bits(original_bits).replace("\n", "\n "))
-        print()
-        print(" Corrupted Bits:")
-        print(" " + format_ieee754_bits(corrupted_bits).replace("\n", "\n "))
-        print("-" * 80)
+        print(f"""
+    🧩 Fault Injection Details
+    {"-" * 80}
+    Component Type : {fault_info["component_type"]}
+    Block Index    : {fault_info["block_idx"]}
+    Parameter Name : {fault_info["param_name"]}
+    Fault Index    : {fault_info["fault_idx"]}
+    Bit Range      : {fault_info["bit_range"]}
+    Bit Flipped    : {fault_info["bit_flipped"]}
+    Original Value : {fault_info["original_value"]:.8f}
+    Corrupted Value: {fault_info["corrupted_value"]:.8f}
+
+    Original Bits:
+    {format_ieee754_bits(original_bits).replace(chr(10), chr(10) + "    ")}
+
+    Corrupted Bits:
+    {format_ieee754_bits(corrupted_bits).replace(chr(10), chr(10) + "    ")}
+    {"-" * 80}
+    """)
 
     return fault_info
