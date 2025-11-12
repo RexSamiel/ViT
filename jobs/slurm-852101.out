@@ -1,4 +1,0 @@
-  File "/gpfs/mariana/home/svloor/Documents/vit/models/vit-base-patch16-224/main.py", line 66
-    fault injection
-          ^^^^^^^^^
-SyntaxError: invalid syntax

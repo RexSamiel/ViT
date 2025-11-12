@@ -1,405 +1,0 @@
-Using device: cuda
-Model loaded: vit_base_patch16_224
-Injecting faults:   0%|          | 0/100 [00:00<?, ?it/s]Injecting faults:  77%|███████▋  | 77/100 [00:00<00:00, 769.50it/s]Injecting faults: 100%|██████████| 100/100 [00:00<00:00, 952.62it/s]
-/gpfs/mariana/home/svloor/Documents/vit/common/vit_env/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 4 worker processes in total. Our suggested max number of worker in current system is 2, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-Validating:   0%|          | 0/391 [00:00<?, ?it/s]Validating:   0%|          | 1/391 [00:10<1:10:28, 10.84s/it]Validating:   1%|          | 4/391 [00:10<13:29,  2.09s/it]  Validating:   2%|▏         | 7/391 [00:12<07:57,  1.24s/it]Validating:   2%|▏         | 9/391 [00:15<08:55,  1.40s/it]Validating:   3%|▎         | 10/391 [00:16<07:37,  1.20s/it]Validating:   3%|▎         | 12/391 [00:16<05:06,  1.24it/s]Validating:   3%|▎         | 13/391 [00:19<07:45,  1.23s/it]Validating:   4%|▎         | 14/391 [00:19<06:45,  1.08s/it]Validating:   4%|▍         | 16/391 [00:20<04:22,  1.43it/s]Validating:   4%|▍         | 17/391 [00:22<07:12,  1.16s/it]Validating:   5%|▍         | 18/391 [00:23<06:39,  1.07s/it]Validating:   5%|▌         | 21/391 [00:26<06:03,  1.02it/s]Validating:   6%|▌         | 22/391 [00:27<05:59,  1.03it/s]Validating:   6%|▋         | 25/391 [00:30<05:42,  1.07it/s]Validating:   7%|▋         | 26/391 [00:31<05:51,  1.04it/s]Validating:   7%|▋         | 29/391 [00:33<05:11,  1.16it/s]Validating:   8%|▊         | 30/391 [00:34<05:32,  1.09it/s]Validating:   8%|▊         | 33/391 [00:36<04:57,  1.20it/s]Validating:   9%|▊         | 34/391 [00:38<05:30,  1.08it/s]Validating:   9%|▉         | 37/391 [00:40<04:54,  1.20it/s]Validating:  10%|▉         | 38/391 [00:41<05:33,  1.06it/s]Validating:  10%|█         | 41/391 [00:43<04:47,  1.22it/s]Validating:  11%|█         | 42/391 [00:45<05:22,  1.08it/s]Validating:  12%|█▏        | 45/391 [00:47<04:44,  1.22it/s]Validating:  12%|█▏        | 46/391 [00:48<05:16,  1.09it/s]Validating:  13%|█▎        | 49/391 [00:50<04:46,  1.19it/s]Validating:  13%|█▎        | 50/391 [00:52<05:16,  1.08it/s]Validating:  14%|█▎        | 53/391 [00:53<04:28,  1.26it/s]Validating:  14%|█▍        | 54/391 [00:55<05:05,  1.10it/s]Validating:  15%|█▍        | 57/391 [00:57<04:20,  1.28it/s]Validating:  15%|█▍        | 58/391 [00:58<04:54,  1.13it/s]Validating:  16%|█▌        | 61/391 [01:00<04:21,  1.26it/s]Validating:  16%|█▌        | 62/391 [01:01<04:43,  1.16it/s]Validating:  17%|█▋        | 65/391 [01:03<04:14,  1.28it/s]Validating:  17%|█▋        | 66/391 [01:04<04:36,  1.17it/s]Validating:  18%|█▊        | 69/391 [01:07<04:13,  1.27it/s]Validating:  18%|█▊        | 70/391 [01:08<04:37,  1.15it/s]Validating:  19%|█▊        | 73/391 [01:10<04:07,  1.28it/s]Validating:  19%|█▉        | 74/391 [01:11<04:29,  1.18it/s]Validating:  20%|█▉        | 77/391 [01:13<04:05,  1.28it/s]Validating:  20%|█▉        | 78/391 [01:14<04:38,  1.12it/s]Validating:  21%|██        | 81/391 [01:16<04:03,  1.27it/s]Validating:  21%|██        | 82/391 [01:18<04:31,  1.14it/s]Validating:  22%|██▏       | 85/391 [01:20<04:08,  1.23it/s]Validating:  22%|██▏       | 86/391 [01:21<04:37,  1.10it/s]Validating:  23%|██▎       | 89/391 [01:23<04:06,  1.23it/s]Validating:  23%|██▎       | 90/391 [01:25<04:26,  1.13it/s]Validating:  24%|██▍       | 93/391 [01:27<04:13,  1.17it/s]Validating:  24%|██▍       | 94/391 [01:28<04:00,  1.24it/s]Validating:  25%|██▍       | 97/391 [01:30<04:11,  1.17it/s]Validating:  25%|██▌       | 98/391 [01:31<03:53,  1.25it/s]Validating:  25%|██▌       | 99/391 [01:31<03:19,  1.46it/s]Validating:  26%|██▌       | 101/391 [01:34<04:22,  1.10it/s]Validating:  26%|██▌       | 102/391 [01:34<04:06,  1.17it/s]Validating:  26%|██▋       | 103/391 [01:35<03:23,  1.42it/s]Validating:  27%|██▋       | 105/391 [01:37<04:29,  1.06it/s]Validating:  27%|██▋       | 106/391 [01:38<04:03,  1.17it/s]Validating:  28%|██▊       | 109/391 [01:41<04:25,  1.06it/s]Validating:  28%|██▊       | 111/391 [01:41<03:14,  1.44it/s]Validating:  29%|██▉       | 113/391 [01:44<04:27,  1.04it/s]Validating:  29%|██▉       | 115/391 [01:44<03:13,  1.42it/s]Validating:  30%|██▉       | 117/391 [01:48<04:33,  1.00it/s]Validating:  31%|███       | 120/391 [01:48<02:48,  1.61it/s]Validating:  31%|███       | 121/391 [01:51<04:30,  1.00s/it]Validating:  31%|███▏      | 123/391 [01:51<03:14,  1.37it/s]Validating:  32%|███▏      | 125/391 [01:54<04:23,  1.01it/s]Validating:  32%|███▏      | 127/391 [01:55<03:13,  1.37it/s]Validating:  33%|███▎      | 129/391 [01:58<04:18,  1.01it/s]Validating:  34%|███▎      | 131/391 [01:58<03:11,  1.36it/s]Validating:  34%|███▍      | 133/391 [02:01<04:19,  1.01s/it]Validating:  35%|███▍      | 136/391 [02:01<02:39,  1.59it/s]Validating:  35%|███▌      | 137/391 [02:05<04:26,  1.05s/it]Validating:  36%|███▌      | 140/391 [02:05<02:41,  1.55it/s]Validating:  36%|███▋      | 142/391 [02:08<03:47,  1.10it/s]Validating:  37%|███▋      | 145/391 [02:12<04:04,  1.00it/s]Validating:  38%|███▊      | 148/391 [02:12<02:41,  1.50it/s]Validating:  38%|███▊      | 150/391 [02:15<03:34,  1.13it/s]Validating:  39%|███▊      | 151/391 [02:15<03:06,  1.29it/s]Validating:  39%|███▉      | 153/391 [02:18<03:56,  1.01it/s]Validating:  40%|███▉      | 155/391 [02:18<02:49,  1.39it/s]Validating:  40%|████      | 157/391 [02:21<03:50,  1.01it/s]Validating:  41%|████      | 159/391 [02:21<02:43,  1.42it/s]Validating:  41%|████      | 161/391 [02:25<03:46,  1.02it/s]Validating:  42%|████▏     | 164/391 [02:25<02:20,  1.62it/s]Validating:  42%|████▏     | 166/391 [02:28<03:11,  1.18it/s]Validating:  43%|████▎     | 167/391 [02:28<02:45,  1.36it/s]Validating:  43%|████▎     | 169/391 [02:31<03:40,  1.00it/s]Validating:  44%|████▍     | 172/391 [02:31<02:14,  1.63it/s]Validating:  45%|████▍     | 174/391 [02:35<03:20,  1.08it/s]Validating:  45%|████▌     | 177/391 [02:38<03:32,  1.01it/s]Validating:  46%|████▌     | 180/391 [02:38<02:19,  1.51it/s]Validating:  47%|████▋     | 182/391 [02:41<03:09,  1.10it/s]Validating:  47%|████▋     | 185/391 [02:45<03:18,  1.04it/s]Validating:  48%|████▊     | 188/391 [02:45<02:14,  1.51it/s]Validating:  49%|████▊     | 190/391 [02:48<02:55,  1.15it/s]Validating:  49%|████▉     | 193/391 [02:51<03:06,  1.06it/s]Validating:  50%|█████     | 196/391 [02:51<02:06,  1.54it/s]Validating:  51%|█████     | 198/391 [02:54<02:45,  1.16it/s]Validating:  51%|█████▏    | 201/391 [02:58<02:56,  1.08it/s]Validating:  52%|█████▏    | 204/391 [02:58<02:00,  1.56it/s]Validating:  52%|█████▏    | 205/391 [03:01<03:02,  1.02it/s]Validating:  53%|█████▎    | 208/391 [03:01<01:56,  1.56it/s]Validating:  54%|█████▎    | 210/391 [03:04<02:37,  1.15it/s]Validating:  54%|█████▍    | 213/391 [03:07<02:45,  1.08it/s]Validating:  55%|█████▌    | 216/391 [03:07<01:50,  1.59it/s]Validating:  56%|█████▌    | 218/391 [03:10<02:26,  1.18it/s]Validating:  57%|█████▋    | 221/391 [03:14<02:41,  1.05it/s]Validating:  57%|█████▋    | 224/391 [03:14<01:48,  1.53it/s]Validating:  58%|█████▊    | 226/391 [03:17<02:23,  1.15it/s]Validating:  59%|█████▊    | 229/391 [03:20<02:33,  1.06it/s]Validating:  59%|█████▉    | 231/391 [03:20<01:56,  1.37it/s]Validating:  60%|█████▉    | 233/391 [03:23<02:28,  1.07it/s]Validating:  60%|██████    | 236/391 [03:24<01:36,  1.61it/s]Validating:  61%|██████    | 238/391 [03:27<02:12,  1.15it/s]Validating:  62%|██████▏   | 241/391 [03:30<02:21,  1.06it/s]Validating:  62%|██████▏   | 244/391 [03:30<01:34,  1.55it/s]Validating:  63%|██████▎   | 246/391 [03:33<02:04,  1.17it/s]Validating:  64%|██████▎   | 249/391 [03:37<02:13,  1.07it/s]Validating:  64%|██████▍   | 252/391 [03:37<01:29,  1.55it/s]Validating:  65%|██████▍   | 254/391 [03:40<02:01,  1.13it/s]Validating:  66%|██████▌   | 257/391 [03:43<02:06,  1.06it/s]Validating:  66%|██████▋   | 260/391 [03:43<01:25,  1.53it/s]Validating:  67%|██████▋   | 262/391 [03:46<01:49,  1.18it/s]Validating:  68%|██████▊   | 265/391 [03:49<01:56,  1.08it/s]Validating:  69%|██████▊   | 268/391 [03:50<01:18,  1.57it/s]Validating:  69%|██████▉   | 270/391 [03:53<01:42,  1.18it/s]Validating:  70%|██████▉   | 273/391 [03:56<01:45,  1.11it/s]Validating:  71%|███████   | 276/391 [03:56<01:11,  1.61it/s]Validating:  71%|███████   | 278/391 [03:59<01:33,  1.21it/s]Validating:  72%|███████▏  | 281/391 [04:02<01:38,  1.11it/s]Validating:  73%|███████▎  | 284/391 [04:02<01:06,  1.61it/s]Validating:  73%|███████▎  | 285/391 [04:05<01:38,  1.08it/s]Validating:  74%|███████▎  | 288/391 [04:05<01:02,  1.65it/s]Validating:  74%|███████▍  | 290/391 [04:08<01:25,  1.18it/s]Validating:  75%|███████▍  | 293/391 [04:11<01:28,  1.10it/s]Validating:  76%|███████▌  | 296/391 [04:11<00:58,  1.62it/s]Validating:  76%|███████▌  | 298/391 [04:14<01:18,  1.19it/s]Validating:  77%|███████▋  | 301/391 [04:17<01:21,  1.11it/s]Validating:  78%|███████▊  | 304/391 [04:18<00:53,  1.61it/s]Validating:  78%|███████▊  | 306/391 [04:20<01:09,  1.23it/s]Validating:  79%|███████▉  | 309/391 [04:24<01:14,  1.10it/s]Validating:  80%|███████▉  | 312/391 [04:24<00:50,  1.57it/s]Validating:  80%|████████  | 313/391 [04:27<01:14,  1.05it/s]Validating:  81%|████████  | 316/391 [04:27<00:46,  1.60it/s]Validating:  81%|████████▏ | 318/391 [04:30<01:04,  1.14it/s]Validating:  82%|████████▏ | 320/391 [04:31<00:46,  1.51it/s]Validating:  82%|████████▏ | 321/391 [04:34<01:13,  1.04s/it]Validating:  83%|████████▎ | 323/391 [04:34<00:49,  1.37it/s]Validating:  83%|████████▎ | 325/391 [04:37<01:05,  1.01it/s]Validating:  84%|████████▍ | 328/391 [04:37<00:40,  1.57it/s]Validating:  84%|████████▍ | 329/391 [04:40<01:02,  1.00s/it]Validating:  85%|████████▍ | 332/391 [04:40<00:37,  1.57it/s]Validating:  85%|████████▌ | 333/391 [04:43<00:58,  1.00s/it]Validating:  86%|████████▌ | 336/391 [04:44<00:35,  1.54it/s]Validating:  86%|████████▌ | 337/391 [04:47<00:54,  1.02s/it]Validating:  87%|████████▋ | 340/391 [04:47<00:32,  1.57it/s]Validating:  87%|████████▋ | 341/391 [04:50<00:51,  1.02s/it]Validating:  88%|████████▊ | 344/391 [04:50<00:29,  1.57it/s]Validating:  88%|████████▊ | 345/391 [04:53<00:45,  1.02it/s]Validating:  89%|████████▉ | 348/391 [04:53<00:27,  1.59it/s]Validating:  89%|████████▉ | 349/391 [04:56<00:41,  1.02it/s]Validating:  90%|█████████ | 352/391 [04:56<00:24,  1.61it/s]Validating:  90%|█████████ | 353/391 [04:59<00:37,  1.01it/s]Validating:  91%|█████████ | 356/391 [05:00<00:23,  1.51it/s]Validating:  91%|█████████▏| 357/391 [05:02<00:34,  1.00s/it]Validating:  92%|█████████▏| 360/391 [05:03<00:20,  1.53it/s]Validating:  92%|█████████▏| 361/391 [05:06<00:30,  1.01s/it]Validating:  93%|█████████▎| 364/391 [05:06<00:17,  1.55it/s]Validating:  93%|█████████▎| 365/391 [05:09<00:25,  1.01it/s]Validating:  94%|█████████▍| 368/391 [05:09<00:15,  1.51it/s]Validating:  94%|█████████▍| 369/391 [05:12<00:21,  1.00it/s]Validating:  95%|█████████▌| 372/391 [05:13<00:12,  1.50it/s]Validating:  95%|█████████▌| 373/391 [05:15<00:17,  1.00it/s]Validating:  96%|█████████▌| 376/391 [05:16<00:09,  1.54it/s]Validating:  96%|█████████▋| 377/391 [05:19<00:13,  1.02it/s]Validating:  97%|█████████▋| 380/391 [05:19<00:07,  1.54it/s]Validating:  97%|█████████▋| 381/391 [05:22<00:09,  1.04it/s]Validating:  98%|█████████▊| 384/391 [05:22<00:04,  1.61it/s]Validating:  98%|█████████▊| 385/391 [05:25<00:05,  1.07it/s]Validating:  99%|█████████▉| 388/391 [05:25<00:01,  1.61it/s]Validating:  99%|█████████▉| 389/391 [05:28<00:01,  1.10it/s]Validating: 100%|██████████| 391/391 [05:28<00:00,  1.19it/s]
-Pred=0, Label=785
-Pred=0, Label=143
-Pred=0, Label=788
-Pred=0, Label=92
-Pred=0, Label=131
-Pred=0, Label=247
-Pred=0, Label=531
-Pred=0, Label=639
-Pred=0, Label=721
-Pred=0, Label=332
-Pred=0, Label=747
-Pred=0, Label=14
-Pred=0, Label=237
-Pred=0, Label=91
-Pred=0, Label=486
-Pred=0, Label=729
-Pred=0, Label=730
-Pred=0, Label=148
-Pred=0, Label=71
-Pred=0, Label=444
-Pred=0, Label=857
-Pred=0, Label=306
-Pred=0, Label=461
-Pred=0, Label=930
-Pred=0, Label=548
-Pred=0, Label=913
-Pred=0, Label=782
-Pred=0, Label=56
-Pred=0, Label=831
-Pred=0, Label=465
-Pred=0, Label=694
-Pred=0, Label=212
-Pred=0, Label=132
-Pred=0, Label=58
-Pred=0, Label=985
-Pred=0, Label=14
-Pred=0, Label=309
-Pred=0, Label=698
-Pred=0, Label=704
-Pred=0, Label=981
-Pred=0, Label=4
-Pred=0, Label=113
-Pred=0, Label=992
-Pred=0, Label=598
-Pred=0, Label=4
-Pred=0, Label=269
-Pred=0, Label=34
-Pred=0, Label=632
-Pred=0, Label=991
-Pred=0, Label=287
-Pred=0, Label=607
-Pred=0, Label=461
-Pred=0, Label=118
-Pred=0, Label=685
-Pred=0, Label=514
-Pred=0, Label=991
-Pred=0, Label=250
-Pred=0, Label=613
-Pred=0, Label=776
-Pred=0, Label=904
-Pred=0, Label=3
-Pred=0, Label=665
-Pred=0, Label=212
-Pred=0, Label=571
-Pred=0, Label=175
-Pred=0, Label=411
-Pred=0, Label=330
-Pred=0, Label=974
-Pred=0, Label=835
-Pred=0, Label=654
-Pred=0, Label=212
-Pred=0, Label=348
-Pred=0, Label=729
-Pred=0, Label=500
-Pred=0, Label=447
-Pred=0, Label=781
-Pred=0, Label=898
-Pred=0, Label=41
-Pred=0, Label=577
-Pred=0, Label=401
-Pred=0, Label=607
-Pred=0, Label=139
-Pred=0, Label=166
-Pred=0, Label=173
-Pred=0, Label=480
-Pred=0, Label=165
-Pred=0, Label=73
-Pred=0, Label=185
-Pred=0, Label=971
-Pred=0, Label=140
-Pred=0, Label=783
-Pred=0, Label=76
-Pred=0, Label=36
-Pred=0, Label=863
-Pred=0, Label=344
-Pred=0, Label=533
-Pred=0, Label=719
-Pred=0, Label=213
-Pred=0, Label=96
-Pred=0, Label=27
-Pred=0, Label=212
-Pred=0, Label=331
-Pred=0, Label=779
-Pred=0, Label=814
-Pred=0, Label=351
-Pred=0, Label=173
-Pred=0, Label=575
-Pred=0, Label=586
-Pred=0, Label=121
-Pred=0, Label=503
-Pred=0, Label=872
-Pred=0, Label=57
-Pred=0, Label=616
-Pred=0, Label=992
-Pred=0, Label=396
-Pred=0, Label=620
-Pred=0, Label=560
-Pred=0, Label=288
-Pred=0, Label=873
-Pred=0, Label=964
-Pred=0, Label=659
-Pred=0, Label=301
-Pred=0, Label=779
-Pred=0, Label=449
-Pred=0, Label=84
-Pred=0, Label=313
-Pred=0, Label=626
-Pred=0, Label=808
-Pred=0, Label=672
-Pred=0, Label=814
-Pred=0, Label=302
-Pred=0, Label=720
-Pred=0, Label=56
-Pred=0, Label=276
-Pred=0, Label=149
-Pred=0, Label=39
-Pred=0, Label=67
-Pred=0, Label=239
-Pred=0, Label=43
-Pred=0, Label=399
-Pred=0, Label=223
-Pred=0, Label=293
-Pred=0, Label=610
-Pred=0, Label=568
-Pred=0, Label=21
-Pred=0, Label=880
-Pred=0, Label=500
-Pred=0, Label=349
-Pred=0, Label=48
-Pred=0, Label=125
-Pred=0, Label=161
-Pred=0, Label=494
-Pred=0, Label=121
-Pred=0, Label=868
-Pred=0, Label=257
-Pred=0, Label=436
-Pred=0, Label=273
-Pred=0, Label=937
-Pred=0, Label=603
-Pred=0, Label=213
-Pred=0, Label=778
-Pred=0, Label=541
-Pred=0, Label=160
-Pred=0, Label=662
-Pred=0, Label=918
-Pred=0, Label=306
-Pred=0, Label=180
-Pred=0, Label=698
-Pred=0, Label=628
-Pred=0, Label=896
-Pred=0, Label=818
-Pred=0, Label=769
-Pred=0, Label=173
-Pred=0, Label=57
-Pred=0, Label=583
-Pred=0, Label=931
-Pred=0, Label=352
-Pred=0, Label=757
-Pred=0, Label=679
-Pred=0, Label=776
-Pred=0, Label=853
-Pred=0, Label=53
-Pred=0, Label=630
-Pred=0, Label=610
-Pred=0, Label=868
-Pred=0, Label=214
-Pred=0, Label=579
-Pred=0, Label=177
-Pred=0, Label=982
-Pred=0, Label=630
-Pred=0, Label=781
-Pred=0, Label=738
-Pred=0, Label=947
-Pred=0, Label=466
-Pred=0, Label=589
-Pred=0, Label=610
-Pred=0, Label=887
-Pred=0, Label=209
-Pred=0, Label=552
-Pred=0, Label=767
-Pred=0, Label=126
-Pred=0, Label=470
-Pred=0, Label=585
-Pred=0, Label=377
-Pred=0, Label=954
-Pred=0, Label=477
-Pred=0, Label=330
-Pred=0, Label=618
-Pred=0, Label=232
-Pred=0, Label=401
-Pred=0, Label=589
-Pred=0, Label=900
-Pred=0, Label=979
-Pred=0, Label=606
-Pred=0, Label=304
-Pred=0, Label=199
-Pred=0, Label=312
-Pred=0, Label=991
-Pred=0, Label=34
-Pred=0, Label=402
-Pred=0, Label=838
-Pred=0, Label=729
-Pred=0, Label=197
-Pred=0, Label=307
-Pred=0, Label=150
-Pred=0, Label=55
-Pred=0, Label=148
-Pred=0, Label=862
-Pred=0, Label=866
-Pred=0, Label=847
-Pred=0, Label=847
-Pred=0, Label=647
-Pred=0, Label=187
-Pred=0, Label=723
-Pred=0, Label=822
-Pred=0, Label=485
-Pred=0, Label=994
-Pred=0, Label=256
-Pred=0, Label=257
-Pred=0, Label=244
-Pred=0, Label=767
-Pred=0, Label=17
-Pred=0, Label=768
-Pred=0, Label=774
-Pred=0, Label=618
-Pred=0, Label=605
-Pred=0, Label=151
-Pred=0, Label=837
-Pred=0, Label=568
-Pred=0, Label=503
-Pred=0, Label=387
-Pred=0, Label=557
-Pred=0, Label=670
-Pred=0, Label=220
-Pred=0, Label=68
-Pred=0, Label=58
-Pred=0, Label=706
-Pred=0, Label=784
-Pred=0, Label=310
-Pred=0, Label=699
-Pred=0, Label=504
-Pred=0, Label=169
-Pred=0, Label=467
-Pred=0, Label=976
-Pred=0, Label=752
-Pred=0, Label=670
-Pred=0, Label=276
-Pred=0, Label=859
-Pred=0, Label=361
-Pred=0, Label=765
-Pred=0, Label=331
-Pred=0, Label=376
-Pred=0, Label=283
-Pred=0, Label=265
-Pred=0, Label=185
-Pred=0, Label=174
-Pred=0, Label=363
-Pred=0, Label=431
-Pred=0, Label=138
-Pred=0, Label=985
-Pred=0, Label=657
-Pred=0, Label=15
-Pred=0, Label=5
-Pred=0, Label=189
-Pred=0, Label=955
-Pred=0, Label=440
-Pred=0, Label=183
-Pred=0, Label=500
-Pred=0, Label=110
-Pred=0, Label=109
-Pred=0, Label=170
-Pred=0, Label=202
-Pred=0, Label=136
-Pred=0, Label=69
-Pred=0, Label=518
-Pred=0, Label=98
-Pred=0, Label=696
-Pred=0, Label=994
-Pred=0, Label=855
-Pred=0, Label=228
-Pred=0, Label=254
-Pred=0, Label=198
-Pred=0, Label=299
-Pred=0, Label=801
-Pred=0, Label=482
-Pred=0, Label=251
-Pred=0, Label=366
-Pred=0, Label=208
-Pred=0, Label=135
-Pred=0, Label=904
-Pred=0, Label=643
-Pred=0, Label=694
-Pred=0, Label=42
-Pred=0, Label=747
-Pred=0, Label=785
-Pred=0, Label=621
-Pred=0, Label=478
-Pred=0, Label=226
-Pred=0, Label=322
-Pred=0, Label=958
-Pred=0, Label=194
-Pred=0, Label=167
-Pred=0, Label=417
-Pred=0, Label=11
-Pred=0, Label=914
-Pred=0, Label=537
-Pred=0, Label=280
-Pred=0, Label=715
-Pred=0, Label=157
-Pred=0, Label=573
-Pred=0, Label=286
-Pred=0, Label=0
-Pred=0, Label=634
-Pred=0, Label=862
-Pred=0, Label=119
-Pred=0, Label=779
-Pred=0, Label=799
-Pred=0, Label=854
-Pred=0, Label=539
-Pred=0, Label=666
-Pred=0, Label=825
-Pred=0, Label=154
-Pred=0, Label=437
-Pred=0, Label=814
-Pred=0, Label=148
-Pred=0, Label=337
-Pred=0, Label=344
-Pred=0, Label=825
-Pred=0, Label=184
-Pred=0, Label=425
-Pred=0, Label=818
-Pred=0, Label=996
-Pred=0, Label=552
-Pred=0, Label=886
-Pred=0, Label=914
-Pred=0, Label=106
-Pred=0, Label=105
-Pred=0, Label=852
-Pred=0, Label=282
-Pred=0, Label=895
-Pred=0, Label=308
-Pred=0, Label=130
-Pred=0, Label=396
-Pred=0, Label=287
-Pred=0, Label=638
-Pred=0, Label=25
-Pred=0, Label=866
-Pred=0, Label=403
-Pred=0, Label=898
-Pred=0, Label=961
-Pred=0, Label=144
-Pred=0, Label=513
-Pred=0, Label=866
-Pred=0, Label=990
-Pred=0, Label=792
-Pred=0, Label=835
-Pred=0, Label=196
-Pred=0, Label=141
-Pred=0, Label=326
-Pred=0, Label=702
-Pred=0, Label=774
-Pred=0, Label=132
-Pred=0, Label=733
-Pred=0, Label=872
-Pred=0, Label=753
-Pred=0, Label=815
-Pred=0, Label=414
-Pred=0, Label=528
-Pred=0, Label=793
-Pred=0, Label=934
-Pred=0, Label=546
-
-=== FINAL RESULTS ===
-Samples: 50000
-Top-1 Accuracy: 0.10%
-Top-5 Accuracy: 0.50%
-Average Loss: nan
-
-Results saved to results.txt

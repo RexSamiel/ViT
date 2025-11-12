@@ -1,9 +1,0 @@
-Model: vit_small (vit_small_patch16_224)
-Mode: FAULTY
-Samples: 6400
-Top-1 Accuracy: 74.34%
-Top-5 Accuracy: 93.06%
-Average Loss: 0.9682
-
-SDC Rate: 0.00%
-SDC Magnitude (avg): 0.0000
