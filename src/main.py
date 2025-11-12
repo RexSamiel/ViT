@@ -1,11 +1,11 @@
 import argparse
 import copy
 import torch
-from .core.runner import Runner
-from .config.settings import Config
-from .utils.helper import SUPPORTED_MODELS, print_supported_models
-from .fault_injector.fault_injection import inject_fault
-from .core.analyzer import RunAnalyzer
+from src.core.runner import Runner
+from src.config.settings import Config
+from src.utils.helper import SUPPORTED_MODELS, print_supported_models
+from src.fault_injector.fault_injection import inject_fault
+from src.core.analyzer import RunAnalyzer
 import json
 import os
 
