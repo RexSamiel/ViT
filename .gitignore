@@ -3,7 +3,9 @@
 ignore/
 run.sh
 __pycache__/
-logs/dcgm
-logs/slurm
 .venv
 data/
+logs/
+*.pt
+cache*
+results*

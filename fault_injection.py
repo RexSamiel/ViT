@@ -13,9 +13,8 @@ def parse_bit_range(bit_spec):
         return int(parts[0]), int(parts[1])
     else:
         raise ValueError(
-            f"Invalid bit specification: {
-                bit_spec
-            }. Use int, tuple (min, max), or string 'min...max'"
+            f"Invalid bit specification: {bit_spec}. "
+            "Use int, tuple (min, max), or string 'min...max'"
         )
 
 
