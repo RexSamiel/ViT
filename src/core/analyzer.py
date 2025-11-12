@@ -16,16 +16,20 @@ class RunAnalyzer:
         self.msdc_counted = 0
         self.msdc_skipped = 0
         self.msdc_threshold = msdc_threshold
-        # Risk counters - now more granular
-        self.high_risk = 0  # Top-1 prediction changed to wrong answer
-        self.medium_risk = 0  # Top-5 changed (but top-1 stayed in correct top-5)
-        self.safe = 0  # No prediction changes
+        # Risk counters
+        self.high_risk = 0  # Top-1 prediction changed significantly
+        self.medium_risk = 0  # Top-5 changed (but top-1 didn't)
+        self.safe = 0  # No significant prediction changes
+
+        # Thresholds for "significant" changes (for risk categorization)
+        self.top1_threshold = 0.1  # 0.1% top-1 change threshold
+        self.top5_threshold = 0.1  # 0.1% top-5 change threshold
 
     def update(self, run_result: dict):
         """Update averages and risk counts after a single run."""
         self.n_runs += 1
 
-        # Top-1 and Top-5
+        # Top-1 and Top-5 accuracy
         self.avg_top1 = (
             self.avg_top1 * (self.n_runs - 1) + run_result.get("top1_acc", 0.0)
         ) / self.n_runs
@@ -39,7 +43,7 @@ class RunAnalyzer:
             + run_result.get("logit_sdc_rate", 0.0)
         ) / self.n_runs
 
-        # Prediction SDCs
+        # Prediction SDCs (averages across runs)
         self.avg_pred_sdc = (
             self.avg_pred_sdc * (self.n_runs - 1) + run_result.get("pred_sdc_rate", 0.0)
         ) / self.n_runs
@@ -59,17 +63,17 @@ class RunAnalyzer:
                 self.avg_msdc * (self.msdc_counted - 1) + msdc
             ) / self.msdc_counted
 
-        # Risk categories - CORRECTED LOGIC
+        # Risk categories with thresholds
         pred_sdc = run_result.get("pred_sdc_rate", 0.0)
         pred_top5_sdc = run_result.get("pred_top5_sdc_rate", 0.0)
 
-        # High risk: Top-1 prediction changed (any top-1 mismatch with fault-free)
-        # Medium risk: Top-5 changed but not top-1
-        # Safe: Neither changed
+        # High risk: Top-1 prediction changed significantly
+        # Medium risk: Top-5 set changed significantly (but top-1 didn't)
+        # Safe: No significant changes
 
-        if pred_sdc > 0.0:
+        if pred_sdc > self.top1_threshold:
             self.high_risk += 1
-        elif pred_top5_sdc > 0.0:
+        elif pred_top5_sdc > self.top5_threshold:
             self.medium_risk += 1
         else:
             self.safe += 1
@@ -86,25 +90,26 @@ class RunAnalyzer:
         print(f"  Average Top-5 Accuracy: {summary['avg_top5_acc']:.2f}%")
 
         print(f"\nSDC Metrics:")
-        print(f"  Average Logit SDC Rate: {summary['avg_logit_sdc']:.2f}%")
-        print(f"  Average Top-1 Pred SDC: {summary['avg_pred_sdc']:.2f}%")
-        print(f"  Average Top-5 Pred SDC: {summary['avg_pred_top5_sdc']:.2f}%")
+        print(f"  Average Logit SDC Rate:       {summary['avg_logit_sdc']:.2f}%")
+        print(f"  Average Top-1 Pred Change:    {summary['avg_pred_sdc']:.2f}%")
+        print(f"  Average Top-5 Set Change:     {summary['avg_pred_top5_sdc']:.2f}%")
 
         if summary["msdc_counted_runs"] > 0:
-            print(f"  Average MSDC (counted): {summary['avg_msdc']:.6f}")
-            print(f"  Runs skipped for MSDC: {summary['msdc_skipped_runs']}")
+            print(f"  Average MSDC (counted):       {summary['avg_msdc']:.6f}")
+            if summary["msdc_skipped_runs"] > 0:
+                print(f"  Runs skipped for MSDC:        {summary['msdc_skipped_runs']}")
         else:
             print("  No valid MSDC values (all runs skipped)")
 
         print(f"\nRisk Categories:")
         print(
-            f"  High risk (top-1 changed):   {summary['high_risk_pct']:>6.2f}% ({summary['high_risk_count']} runs)"
+            f"  High risk (top-1 changed):    {summary['high_risk_pct']:>6.2f}% ({summary['high_risk_count']} runs)"
         )
         print(
-            f"  Medium risk (top-5 changed): {summary['medium_risk_pct']:>6.2f}% ({summary['medium_risk_count']} runs)"
+            f"  Medium risk (top-5 changed):  {summary['medium_risk_pct']:>6.2f}% ({summary['medium_risk_count']} runs)"
         )
         print(
-            f"  Safe (no changes):           {summary['safe_pct']:>6.2f}% ({summary['safe_count']} runs)"
+            f"  Safe (minimal changes):       {summary['safe_pct']:>6.2f}% ({summary['safe_count']} runs)"
         )
         print("=" * 60 + "\n")
 
