@@ -6,6 +6,8 @@ from .config.settings import Config
 from .utils.helper import SUPPORTED_MODELS, print_supported_models
 from .fault_injector.fault_injection import inject_fault
 from .core.analyzer import RunAnalyzer
+import json
+import os
 
 
 class ExperimentManager:
@@ -118,7 +120,19 @@ def main():
         print(f"\nCompleted {args.repeat} runs in {args.mode} mode.")
         analyzer.print_summary()
 
+        results_dir = "results"
+        os.makedirs(results_dir, exist_ok=True)
+
+        summary_file = os.path.join(
+            results_dir,
+            f"summary_{config.model_key}_{args.mode}_repeat{args.repeat}.json",
+        )
+
+        with open(summary_file, "w") as f:
+            json.dump(analyzer.get_summary(), f, indent=2)
+
+        print(f"Summary saved to {summary_file}")
+
 
 if __name__ == "__main__":
     main()
-
