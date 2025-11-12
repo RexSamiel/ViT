@@ -17,13 +17,9 @@ class RunAnalyzer:
         self.msdc_skipped = 0
         self.msdc_threshold = msdc_threshold
         # Risk counters
-        self.high_risk = 0  # Top-1 prediction changed significantly
+        self.high_risk = 0  # Top-1 prediction changed
         self.medium_risk = 0  # Top-5 changed (but top-1 didn't)
-        self.safe = 0  # No significant prediction changes
-
-        # Thresholds for "significant" changes (for risk categorization)
-        self.top1_threshold = 0.1  # 0.1% top-1 change threshold
-        self.top5_threshold = 0.1  # 0.1% top-5 change threshold
+        self.safe = 0  # No prediction changes
 
     def update(self, run_result: dict):
         """Update averages and risk counts after a single run."""
@@ -68,9 +64,11 @@ class RunAnalyzer:
         pred_top5_sdc = run_result.get("pred_top5_sdc_rate", 0.0)
 
         # High risk: Top-1 prediction changed significantly
-        # Medium risk: Top-5 set changed significantly (but top-1 didn't)
+        # Medium risk: Top-5 set changed significantly (but top-1 below threshold)
         # Safe: No significant changes
 
+        # IMPORTANT: Check top-1 first, even if it's small but non-zero
+        # This ensures that ANY top-1 change is considered high risk if above threshold
         if pred_sdc > self.top1_threshold:
             self.high_risk += 1
         elif pred_top5_sdc > self.top5_threshold:
@@ -101,7 +99,9 @@ class RunAnalyzer:
         else:
             print("  No valid MSDC values (all runs skipped)")
 
-        print(f"\nRisk Categories:")
+        print(
+            f"\nRisk Categories (threshold: >{self.top1_threshold}% for top-1, >{self.top5_threshold}% for top-5):"
+        )
         print(
             f"  High risk (top-1 changed):    {summary['high_risk_pct']:>6.2f}% ({summary['high_risk_count']} runs)"
         )
