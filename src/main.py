@@ -185,12 +185,47 @@ def main():
             idx=args.idx, block_idx=args.block_idx, bit_range=bit_range
         )
 
-        # Save summary to file
+        # Save summary to file (append mode)
         os.makedirs("results", exist_ok=True)
         summary_path = os.path.join("results", f"summary_{args.model}_{args.mode}.json")
+
+        # Load existing results if file exists
+        existing_results = []
+        if os.path.exists(summary_path):
+            try:
+                with open(summary_path, "r") as f:
+                    existing_results = json.load(f)
+                    # Ensure it's a list
+                    if not isinstance(existing_results, list):
+                        existing_results = [existing_results]
+            except (json.JSONDecodeError, IOError):
+                existing_results = []
+
+        # Append new summary with timestamp
+        import datetime
+
+        new_summary = analyzer.get_summary()
+        new_summary["timestamp"] = datetime.datetime.now().isoformat()
+        new_summary["config"] = {
+            "model": args.model,
+            "mode": args.mode,
+            "repeat": args.repeat,
+            "samples_per_run": config.batch_size
+            * (config.max_batches if config.max_batches else "all"),
+            "batch_size": config.batch_size,
+            "max_batches": config.max_batches,
+            "idx": args.idx,
+            "block_idx": args.block_idx,
+            "bit_range": bit_range,
+        }
+        existing_results.append(new_summary)
+
+        # Save all results
         with open(summary_path, "w") as f:
-            json.dump(analyzer.get_summary(), f, indent=2)
-        print(f"📄 Summary saved to: {summary_path}")
+            json.dump(existing_results, f, indent=2)
+        print(
+            f"📄 Summary appended to: {summary_path} (total experiments: {len(existing_results)})"
+        )
 
 
 if __name__ == "__main__":
