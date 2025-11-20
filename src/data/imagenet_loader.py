@@ -11,7 +11,6 @@ class ImageNetValDataset(Dataset):
         self.transform = transform
         self.syn_to_class = {}
 
-        # Load class mappings
         with open(os.path.join(root, "imagenet_class_index.json"), "r") as f:
             json_file = json.load(f)
             for class_id, v in json_file.items():
@@ -20,7 +19,6 @@ class ImageNetValDataset(Dataset):
         with open(os.path.join(root, "ILSVRC2012_val_labels.json"), "r") as f:
             self.val_to_syn = json.load(f)
 
-        # Collect samples
         samples_dir = os.path.join(root, "ILSVRC/Data/CLS-LOC", split)
         for entry in os.listdir(samples_dir):
             syn_id = self.val_to_syn[entry]

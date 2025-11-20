@@ -13,8 +13,6 @@ from src.core.analyzer import RunAnalyzer
 
 
 class ExperimentManager:
-    """Manages multiple runs efficiently without saving to file."""
-
     def __init__(self, config: Config, n_runs: int, mode: str, verbose: bool):
         self.config = config
         self.n_runs = n_runs
@@ -24,7 +22,6 @@ class ExperimentManager:
         self.original_state = copy.deepcopy(self.runner.evaluator.model.state_dict())
 
     def reset_model(self):
-        """Restore model to original (fault-free) state before each run."""
         self.runner.evaluator.model.load_state_dict(self.original_state)
         torch.cuda.empty_cache()
 
@@ -35,7 +32,6 @@ class ExperimentManager:
         block_idx: int | None = None,
         bit_range: tuple[int, int] | None = None,
     ) -> dict:
-        """Run a single iteration, optionally injecting a fault."""
         if self.verbose:
             print(f"\n{'=' * 60}")
             print(f"⚡ Running {self.mode} run #{run_id + 1}/{self.n_runs}")
@@ -56,8 +52,6 @@ class ExperimentManager:
             if self.verbose:
                 print("✓ Fault injection applied for this run.\n")
 
-        # Run with compute_sdc enabled for faulty mode
-        # In verbose mode, let runner print the full results
         results = self.runner.run(
             compute_metrics=True,
             save_logits=False,
@@ -95,7 +89,7 @@ class ExperimentManager:
         total_runtime = round(total_end - total_start, 2)
 
         print(f"\n✅ All {self.n_runs} {self.mode} runs completed.")
-        print(f"🕒 Total repeated runtime: {total_runtime:.2f} seconds\n")
+        print(f"Total repeated runtime: {total_runtime:.2f} seconds\n")
 
         analyzer.print_summary()
         return analyzer, total_runtime
@@ -132,7 +126,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Parse bit range (e.g., "1,25" -> (1,25))
     bit_range = None
     if args.bit_range:
         parts = args.bit_range.split(",")
@@ -154,7 +147,6 @@ def main():
     config.model_key = args.model
     config.model_name = SUPPORTED_MODELS[args.model]
 
-    # ========== SINGLE RUN ==========
     if args.repeat <= 1:
         runner = Runner(config, verbose=True)
 
@@ -170,7 +162,6 @@ def main():
             )
             print("✓ Fault injection applied.\n")
 
-        # Run evaluation
         runner.run(
             compute_metrics=True,
             save_logits=save_logits,
@@ -178,7 +169,6 @@ def main():
             compute_sdc=(args.mode == "faulty"),
         )
 
-    # ========== MULTI-RUN ==========
     else:
         manager = ExperimentManager(config, args.repeat, args.mode, verbose=verbose)
         analyzer, total_runtime = manager.run_all(
@@ -189,19 +179,16 @@ def main():
         os.makedirs("results", exist_ok=True)
         summary_path = os.path.join("results", f"summary_{args.model}_{args.mode}.json")
 
-        # Load existing results if file exists
         existing_results = []
         if os.path.exists(summary_path):
             try:
                 with open(summary_path, "r") as f:
                     existing_results = json.load(f)
-                    # Ensure it's a list
                     if not isinstance(existing_results, list):
                         existing_results = [existing_results]
             except (json.JSONDecodeError, IOError):
                 existing_results = []
 
-        # Append new summary with timestamp
         import datetime
 
         new_summary = analyzer.get_summary()
@@ -220,11 +207,10 @@ def main():
         }
         existing_results.append(new_summary)
 
-        # Save all results
         with open(summary_path, "w") as f:
             json.dump(existing_results, f, indent=2)
         print(
-            f"📄 Summary appended to: {summary_path} (total experiments: {len(existing_results)})"
+            f"Summary appended to: {summary_path} (total experiments: {len(existing_results)})"
         )
 
 

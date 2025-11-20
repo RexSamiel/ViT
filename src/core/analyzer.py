@@ -2,11 +2,8 @@ import math
 
 
 class RunAnalyzer:
-    """Streaming / incremental analyzer for repeated ViT runs."""
-
     def __init__(self, msdc_threshold: float = 1e6):
         self.n_runs = 0
-        # Running averages
         self.avg_top1 = 0.0
         self.avg_top5 = 0.0
         self.avg_logit_sdc = 0.0
@@ -16,16 +13,13 @@ class RunAnalyzer:
         self.msdc_counted = 0
         self.msdc_skipped = 0
         self.msdc_threshold = msdc_threshold
-        # Risk counters
-        self.high_risk = 0  # Top-1 prediction changed
-        self.medium_risk = 0  # Top-5 changed (but top-1 didn't)
-        self.safe = 0  # No prediction changes
+        self.high_risk = 0
+        self.medium_risk = 0
+        self.safe = 0
 
     def update(self, run_result: dict):
-        """Update averages and risk counts after a single run."""
         self.n_runs += 1
 
-        # Top-1 and Top-5 accuracy
         self.avg_top1 = (
             self.avg_top1 * (self.n_runs - 1) + run_result.get("top1_acc", 0.0)
         ) / self.n_runs
@@ -33,13 +27,11 @@ class RunAnalyzer:
             self.avg_top5 * (self.n_runs - 1) + run_result.get("top5_acc", 0.0)
         ) / self.n_runs
 
-        # Logit SDC
         self.avg_logit_sdc = (
             self.avg_logit_sdc * (self.n_runs - 1)
             + run_result.get("logit_sdc_rate", 0.0)
         ) / self.n_runs
 
-        # Prediction SDCs (averages across runs)
         self.avg_pred_sdc = (
             self.avg_pred_sdc * (self.n_runs - 1) + run_result.get("pred_sdc_rate", 0.0)
         ) / self.n_runs
@@ -49,7 +41,6 @@ class RunAnalyzer:
             + run_result.get("pred_top5_sdc_rate", 0.0)
         ) / self.n_runs
 
-        # MSDC handling
         msdc = run_result.get("msdc_avg", None)
         if msdc is None or math.isnan(msdc) or msdc > self.msdc_threshold:
             self.msdc_skipped += 1
@@ -59,13 +50,8 @@ class RunAnalyzer:
                 self.avg_msdc * (self.msdc_counted - 1) + msdc
             ) / self.msdc_counted
 
-        # Risk categories - no thresholds, any change counts
         pred_sdc = run_result.get("pred_sdc_rate", 0.0)
         pred_top5_sdc = run_result.get("pred_top5_sdc_rate", 0.0)
-
-        # High risk: Any top-1 prediction change
-        # Medium risk: Any top-5 set change (but no top-1 change)
-        # Safe: No prediction changes
 
         if pred_sdc > 0.0:
             self.high_risk += 1
@@ -110,7 +96,6 @@ class RunAnalyzer:
         print("=" * 60 + "\n")
 
     def get_summary(self) -> dict[str, float | int | None]:
-        """Return the current summary as a dictionary for JSON export or further analysis."""
         return {
             "total_runs": self.n_runs,
             "avg_top1_acc": self.avg_top1,

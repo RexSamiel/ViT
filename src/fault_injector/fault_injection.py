@@ -3,6 +3,30 @@ import torch
 import numpy as np
 
 
+def get_num_blocks(model):
+    if hasattr(model, "blocks"):
+        return len(model.blocks)  # ViT / BEiT
+    elif hasattr(model, "layers"):
+        return sum(len(layer.blocks) for layer in model.layers)  # Swin
+    else:
+        raise ValueError("Model does not have blocks or layers[].blocks")
+
+
+def get_block(model, block_idx):
+    """Return the block by a flat index regardless of model type."""
+    if hasattr(model, "blocks"):
+        return model.blocks[block_idx]  # ViT / BEiT
+
+    elif hasattr(model, "layers"):  # Swin
+        # Flatten (layer, block) indexing
+        for layer in model.layers:
+            if block_idx < len(layer.blocks):
+                return layer.blocks[block_idx]
+            block_idx -= len(layer.blocks)
+
+    raise ValueError("Invalid block_idx or unsupported model architecture.")
+
+
 def parse_bit_range(bit_spec):
     if isinstance(bit_spec, int):
         return bit_spec, bit_spec
@@ -18,30 +42,21 @@ def parse_bit_range(bit_spec):
         )
 
 
-def flip_random_bit(
-    value: torch.Tensor, bit_range=None
-) -> tuple[torch.Tensor, int, str, str]:
+def flip_random_bit(value: torch.Tensor, bit_range=None):
     if value.dtype != torch.float32:
         value = value.float()
 
-    # choose random bit
     if bit_range is None:
         rand_bit = random.randint(0, 31)
     else:
         min_bit, max_bit = parse_bit_range(bit_range)
-        if not (0 <= min_bit <= max_bit <= 31):
-            raise ValueError(
-                f"Bit range must be within 0-31. Got: {min_bit}...{max_bit}"
-            )
         rand_bit = random.randint(min_bit, max_bit)
 
     val_int = value.view(torch.int32)
-
     mask = torch.tensor(1, dtype=torch.int32, device=value.device) << rand_bit
-
     corrupted_int = val_int ^ mask
-    corrupted_value = corrupted_int.view(torch.float32)
 
+    corrupted_value = corrupted_int.view(torch.float32)
     original_bits = f"{val_int.item():032b}"
     corrupted_bits = f"{corrupted_int.item():032b}"
 
@@ -49,16 +64,10 @@ def flip_random_bit(
 
 
 def format_ieee754_bits(bits_str: str) -> str:
-    bits_str = bits_str.replace("-", "").replace("+", "")
-    if len(bits_str) != 32:
-        bits_str = bits_str.zfill(32)
-
-    sign = bits_str[0]
-    exponent = bits_str[1:9]
-    mantissa = bits_str[9:]
-    header = "Sign  Exponent   Mantissa                  "
-    values = f" {sign}    {exponent}  {mantissa}"
-    return f"{header}\n{values}"
+    bits_str = bits_str.replace("-", "").replace("+", "").zfill(32)
+    return (
+        f"Sign  Exponent   Mantissa\n {bits_str[0]}    {bits_str[1:9]}  {bits_str[9:]}"
+    )
 
 
 def inject_fault(
@@ -71,32 +80,32 @@ def inject_fault(
 ):
     available_params = []
 
+    total_blocks = get_num_blocks(model)
+
+    if block_idx is None:
+        block_idx = random.randint(0, total_blocks - 1)
+
+    block = get_block(model, block_idx)  # <--- universal access
+
     if component_type == "all":
         component_type = random.choice(
             ["attention", "norm", "mlp", "patch_embed", "classifier"]
         )
 
     if component_type == "attention":
-        if block_idx is None:
-            block_idx = random.randint(0, len(model.blocks) - 1)
-        attn = model.blocks[block_idx].attn
+        attn = block.attn
         for name, param in attn.named_parameters():
-            if name in ["qkv.weight"]:
+            if name == "qkv.weight":
                 available_params.append((f"Block{block_idx}.attn.{name}", param))
 
     elif component_type == "norm":
-        if block_idx is None:
-            block_idx = random.randint(0, len(model.blocks) - 1)
-        block = model.blocks[block_idx]
         for name, param in block.norm1.named_parameters():
             available_params.append((f"Block{block_idx}.norm1.{name}", param))
         for name, param in block.norm2.named_parameters():
             available_params.append((f"Block{block_idx}.norm2.{name}", param))
 
     elif component_type == "mlp":
-        if block_idx is None:
-            block_idx = random.randint(0, len(model.blocks) - 1)
-        mlp = model.blocks[block_idx].mlp
+        mlp = block.mlp
         for name, param in mlp.named_parameters():
             if name in ["fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias"]:
                 available_params.append((f"Block{block_idx}.mlp.{name}", param))
@@ -114,36 +123,28 @@ def inject_fault(
                 available_params.append((f"head.{name}", param))
 
     if not available_params:
-        raise ValueError(
-            f"No suitable parameters found for component_type: {component_type}"
-        )
+        raise ValueError(f"No suitable params for component_type: {component_type}")
 
     param_full_name, param = random.choice(available_params)
     if idx is None:
         idx = tuple(random.randint(0, s - 1) for s in param.shape)
 
+    # Flip bit
     original_value = param[idx].clone()
     corrupted_value, bit_flipped, original_bits, corrupted_bits = flip_random_bit(
-        original_value, bit_range=bit_range
+        original_value, bit_range
     )
 
+    # Inject
     with torch.no_grad():
         param[idx] = corrupted_value
-
-    if bit_range is None:
-        bit_range_str = "0-31 (any)"
-    elif isinstance(bit_range, int):
-        bit_range_str = f"{bit_range} (specific)"
-    else:
-        min_bit, max_bit = parse_bit_range(bit_range)
-        bit_range_str = f"{min_bit}-{max_bit}"
 
     fault_info = {
         "component_type": component_type,
         "block_idx": block_idx,
         "param_name": param_full_name,
         "fault_idx": idx,
-        "bit_range": bit_range_str,
+        "bit_range": bit_range,
         "bit_flipped": bit_flipped,
         "original_value": original_value.item(),
         "corrupted_value": corrupted_value.item(),
@@ -153,23 +154,23 @@ def inject_fault(
 
     if verbose:
         print(f"""
-    Fault Injection Details
-    {"-" * 80}
-    Component Type : {fault_info["component_type"]}
-    Block Index    : {fault_info["block_idx"]}
-    Parameter Name : {fault_info["param_name"]}
-    Fault Index    : {fault_info["fault_idx"]}
-    Bit Range      : {fault_info["bit_range"]}
-    Bit Flipped    : {fault_info["bit_flipped"]}
-    Original Value : {fault_info["original_value"]:.8f}
-    Corrupted Value: {fault_info["corrupted_value"]:.8f}
+Fault Injection Details
+{"-" * 80}
+Component Type : {component_type}
+Block Index    : {block_idx}
+Parameter Name : {param_full_name}
+Fault Index    : {idx}
+Bit Flipped    : {bit_flipped}
+Original Value : {original_value.item():.8f}
+Corrupted Value: {corrupted_value.item():.8f}
 
-    Original Bits:
-    {format_ieee754_bits(original_bits).replace(chr(10), chr(10) + "    ")}
+Original Bits:
+{format_ieee754_bits(original_bits)}
 
-    Corrupted Bits:
-    {format_ieee754_bits(corrupted_bits).replace(chr(10), chr(10) + "    ")}
-    {"-" * 80}
-    """)
+Corrupted Bits:
+{format_ieee754_bits(corrupted_bits)}
+{"-" * 80}
+""")
 
     return fault_info
+

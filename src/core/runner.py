@@ -4,6 +4,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from dataclasses import dataclass
 import timm
+from timm.data import resolve_data_config, create_transform
 import functools
 import typing
 import os
@@ -11,11 +12,10 @@ import time
 
 from src.utils.logits import FaultFreeLogits
 from src.data.imagenet_loader import ImageNetValDataset
+from src.config.settings import Config
 
 
 class MetricsTracker:
-    """Tracks accuracy, loss, and SDC metrics."""
-
     def __init__(self) -> None:
         self.reset()
 
@@ -49,7 +49,6 @@ class MetricsTracker:
         ff_logits: torch.Tensor,
         labels: torch.Tensor,
     ) -> None:
-        # Logit-level SDC
         diff = ff_logits - faulty_logits
         threshold = 1e-6
         sdc_rate = (diff.abs() > threshold).float().mean(dim=1)
@@ -57,25 +56,20 @@ class MetricsTracker:
         self.sdc_rates.append(sdc_rate.cpu())
         self.sdc_magnitudes.append(sdc_magnitude.cpu())
 
-        # Get predictions
         pred_faulty = faulty_logits.argmax(dim=1)
         pred_ff = ff_logits.argmax(dim=1)
 
-        # Top-1 SDC: predictions differ
         pred_changed = pred_faulty != pred_ff
         pred_sdc = pred_changed.float().mean()
         self.pred_sdc_rates.append(pred_sdc.item())
 
-        # Top-5 SDC: Check if the top-5 sets differ
         top5_faulty = faulty_logits.topk(5, dim=1)[1]
         top5_ff = ff_logits.topk(5, dim=1)[1]
 
-        # For each sample, check if top-5 sets are different
         top5_changed = torch.zeros(
             len(top5_faulty), dtype=torch.bool, device=faulty_logits.device
         )
         for i in range(len(top5_faulty)):
-            # Compare sets (order doesn't matter)
             set_ff = set(top5_ff[i].tolist())
             set_faulty = set(top5_faulty[i].tolist())
             top5_changed[i] = set_ff != set_faulty
@@ -94,43 +88,27 @@ class MetricsTracker:
             "avg_loss": self.total_loss / self.total_samples,
         }
 
-        if self.sdc_rates:
-            results["logit_sdc_rate"] = 100 * torch.cat(self.sdc_rates).mean().item()
-            results["msdc_avg"] = torch.cat(self.sdc_magnitudes).mean().item()
-            results["pred_sdc_rate"] = (
-                100 * sum(self.pred_sdc_rates) / len(self.pred_sdc_rates)
-            )
-            results["pred_top5_sdc_rate"] = (
-                100 * sum(self.pred_top5_sdc_rates) / len(self.pred_top5_sdc_rates)
-            )
-        else:
+        if len(self.sdc_rates) == 0:
             results["logit_sdc_rate"] = 0.0
             results["msdc_avg"] = 0.0
             results["pred_sdc_rate"] = 0.0
             results["pred_top5_sdc_rate"] = 0.0
+            return results
+
+        results["logit_sdc_rate"] = 100 * torch.cat(self.sdc_rates).mean().item()
+        results["msdc_avg"] = torch.cat(self.sdc_magnitudes).mean().item()
+        results["pred_sdc_rate"] = (
+            100 * sum(self.pred_sdc_rates) / len(self.pred_sdc_rates)
+        )
+        results["pred_top5_sdc_rate"] = (
+            100 * sum(self.pred_top5_sdc_rates) / len(self.pred_top5_sdc_rates)
+        )
 
         return results
 
 
-@dataclass
-class RunnerConfig:
-    root_dir: str = "/home/samiel/Documents/thesis/ViT/data/imagenet"
-    model_name: str = "vit_base_patch16_224"
-    model_key: str = "vit_base"
-    batch_size: int = 128
-    num_workers: int = min(4, os.cpu_count() or 2)
-    use_amp: bool = True
-    max_batches: int | None = 50
-
-    @property
-    def device(self) -> torch.device:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 class ModelEvaluator:
-    """Handles model loading and data preparation."""
-
-    def __init__(self, config: RunnerConfig, verbose: bool = True):
+    def __init__(self, config: Config, verbose: bool = True):
         self.config = config
         self.verbose = verbose
         self.device = config.device
@@ -147,20 +125,28 @@ class ModelEvaluator:
         )
         model.eval()
         if self.verbose:
+            print(model.default_cfg)
             print(f"✓ Model loaded successfully on {self.config.device}")
         return model
 
     def _create_dataloader(self) -> DataLoader:
-        transform = transforms.Compose(
-            [
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
+        # Prefer timm's recommended transforms for the loaded model
+        try:
+            data_cfg = resolve_data_config(self.model.default_cfg)
+            transform = create_transform(is_training=False, **data_cfg)
+        except Exception:
+            # Fallback to a standard ImageNet transform if timm helpers fail
+            transform = transforms.Compose(
+                [
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    ),
+                ]
+            )
+
         dataset = ImageNetValDataset(self.config.root_dir, "val", transform)
         return DataLoader(
             dataset,
@@ -187,6 +173,7 @@ class ModelEvaluator:
         )
         batches = []
         for i, (images, labels) in enumerate(dataloader):
+            # Move images and labels to the target device and dtype
             images = images.to(device=device, dtype=dtype, non_blocking=True)
             labels = labels.to(device=device, non_blocking=True)
             batches.append((images, labels))
@@ -199,7 +186,7 @@ class ModelEvaluator:
 
 
 class Runner:
-    def __init__(self, config: RunnerConfig, verbose=True):
+    def __init__(self, config: Config, verbose=True):
         self.config = config
         self.verbose = verbose
         self.evaluator = ModelEvaluator(config, verbose)
@@ -214,11 +201,19 @@ class Runner:
         tracker = MetricsTracker()
         logits_buffer, labels_buffer = [], []
 
-        dtype = (
-            torch.float16
-            if self.config.use_amp and self.config.device.type == "cuda"
-            else torch.float32
+        # Decide whether to enable AMP for this run.
+        # Only enable AMP when running on CUDA and the model is known to be stable in fp16.
+        unstable_fp16_models = ["beit"]
+        use_amp_flag = (
+            self.config.use_amp
+            and self.config.device.type == "cuda"
+            and not any(
+                name in self.config.model_name.lower() for name in unstable_fp16_models
+            )
         )
+
+        dtype = torch.float16 if use_amp_flag else torch.float32
+
         batches = self.evaluator.cached_batches(
             self.config.batch_size, dtype, self.config.device, self.config.max_batches
         )
@@ -226,10 +221,14 @@ class Runner:
         start_time = time.perf_counter()
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(batches):
+                # Use autocast only when we determined AMP is safe and enabled
                 with torch.autocast(
-                    device_type="cuda",
-                    enabled=(self.config.use_amp and self.config.device.type == "cuda"),
+                    device_type=self.config.device.type, enabled=use_amp_flag
                 ):
+                    # Ensure inputs are the correct dtype for the model
+                    if not use_amp_flag and images.dtype != torch.float32:
+                        images = images.float()
+
                     outputs = self.evaluator.model(images)
                     loss = self.evaluator.criterion(outputs, labels)
 
@@ -256,7 +255,7 @@ class Runner:
         results = tracker.get_results()
         if verbose and results:
             self._print_results(results)
-            print(f"⏱️ Total runtime: {time.perf_counter() - start_time:.2f} seconds\n")
+            print(f"Total runtime: {time.perf_counter() - start_time:.2f} seconds\n")
 
         return results
 

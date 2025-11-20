@@ -1,6 +1,3 @@
-# helper.py
-# Utility functions and constants for ViT runner
-
 SUPPORTED_MODELS: dict[str, str] = {
     # ViT models
     "vit_tiny": "vit_tiny_patch16_224",
