@@ -20,7 +20,6 @@ class MetricsTracker:
         self.reset()
 
     def reset(self) -> None:
-        self.total_loss: float = 0.0
         self.total_samples: int = 0
         self.top1_correct: float = 0.0
         self.top5_correct: float = 0.0
@@ -29,9 +28,7 @@ class MetricsTracker:
         self.pred_sdc_rates: list[float] = []
         self.pred_top5_sdc_rates: list[float] = []
 
-    def update_accuracy(
-        self, outputs: torch.Tensor, labels: torch.Tensor, loss: torch.Tensor
-    ) -> None:
+    def update_accuracy(self, outputs: torch.Tensor, labels: torch.Tensor) -> None:
         batch_size = labels.size(0)
         predictions = outputs.argmax(dim=1)
         self.top1_correct += (predictions == labels).sum().item()
@@ -40,7 +37,6 @@ class MetricsTracker:
         top5_matches = (labels.unsqueeze(1) == top5_predictions).any(dim=1)
         self.top5_correct += top5_matches.sum().item()
 
-        self.total_loss += loss.item() * batch_size
         self.total_samples += batch_size
 
     def update_sdc(
@@ -85,7 +81,6 @@ class MetricsTracker:
             "samples": self.total_samples,
             "top1_acc": 100 * self.top1_correct / self.total_samples,
             "top5_acc": 100 * self.top5_correct / self.total_samples,
-            "avg_loss": self.total_loss / self.total_samples,
         }
 
         if len(self.sdc_rates) == 0:
@@ -114,7 +109,6 @@ class ModelEvaluator:
         self.device = config.device
         self.model = self._load_model()
         self.dataloader = self._create_dataloader()
-        self.criterion = nn.CrossEntropyLoss()
         self.ff_logits = FaultFreeLogits(config.model_key)
 
     def _load_model(self) -> nn.Module:
@@ -125,12 +119,10 @@ class ModelEvaluator:
         )
         model.eval()
         if self.verbose:
-            print(model.default_cfg)
             print(f"✓ Model loaded successfully on {self.config.device}")
         return model
 
     def _create_dataloader(self) -> DataLoader:
-        # Prefer timm's recommended transforms for the loaded model
         try:
             data_cfg = resolve_data_config(self.model.default_cfg)
             transform = create_transform(is_training=False, **data_cfg)
@@ -173,7 +165,6 @@ class ModelEvaluator:
         )
         batches = []
         for i, (images, labels) in enumerate(dataloader):
-            # Move images and labels to the target device and dtype
             images = images.to(device=device, dtype=dtype, non_blocking=True)
             labels = labels.to(device=device, non_blocking=True)
             batches.append((images, labels))
@@ -201,8 +192,6 @@ class Runner:
         tracker = MetricsTracker()
         logits_buffer, labels_buffer = [], []
 
-        # Decide whether to enable AMP for this run.
-        # Only enable AMP when running on CUDA and the model is known to be stable in fp16.
         unstable_fp16_models = ["beit"]
         use_amp_flag = (
             self.config.use_amp
@@ -221,25 +210,29 @@ class Runner:
         start_time = time.perf_counter()
         with torch.no_grad():
             for batch_idx, (images, labels) in enumerate(batches):
-                # Use autocast only when we determined AMP is safe and enabled
                 with torch.autocast(
                     device_type=self.config.device.type, enabled=use_amp_flag
                 ):
-                    # Ensure inputs are the correct dtype for the model
                     if not use_amp_flag and images.dtype != torch.float32:
                         images = images.float()
 
+                    labels_clone = labels.clone()
                     outputs = self.evaluator.model(images)
-                    loss = self.evaluator.criterion(outputs, labels)
+                    nan_logits_mask = torch.isnan(outputs).all(dim=1)
+                    num_all_nan = nan_logits_mask.sum().item()
+                    if num_all_nan and verbose:
+                        print(
+                            f"{num_all_nan}/{outputs.size(0)} samples had all-NaN logits in this batch"
+                        )
+                    labels_clone[nan_logits_mask] = 1001
 
                 if save_logits:
                     logits_buffer.append(outputs.cpu())
                     labels_buffer.append(labels.cpu())
 
                 if compute_metrics:
-                    tracker.update_accuracy(outputs, labels, loss)
+                    tracker.update_accuracy(outputs, labels_clone)
 
-                    # Compute SDC if requested and fault-free logits available
                     if compute_sdc and self.evaluator.ff_logits.available:
                         ff_batch = self.evaluator.ff_logits.get_batch(
                             batch_idx,
@@ -247,7 +240,7 @@ class Runner:
                             outputs.size(0),
                             self.config.device,
                         )
-                        tracker.update_sdc(outputs, ff_batch, labels)
+                        tracker.update_sdc(outputs, ff_batch, labels_clone)
 
         if save_logits and logits_buffer:
             self.evaluator.ff_logits.save(logits_buffer, labels_buffer)
@@ -266,9 +259,7 @@ class Runner:
         print(f"Samples:        {results['samples']}")
         print(f"Top-1 Accuracy: {results['top1_acc']:.2f}%")
         print(f"Top-5 Accuracy: {results['top5_acc']:.2f}%")
-        print(f"Average Loss:   {results['avg_loss']:.4f}")
 
-        # Only print SDC metrics if they exist and are non-zero
         if results.get("logit_sdc_rate", 0.0) > 0:
             print(f"Logit SDC Rate:       {results['logit_sdc_rate']:.2f}%")
             print(f"MSDC Average:         {results['msdc_avg']:.6f}")

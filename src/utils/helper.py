@@ -5,6 +5,12 @@ SUPPORTED_MODELS: dict[str, str] = {
     "vit_base": "vit_base_patch16_224",
     "vit_large": "vit_large_patch16_224",
     "vit_huge": "vit_huge_patch14_224",
+    # DeiT models
+    "deit_tiny": "deit_tiny_patch16_224",
+    "deit_small": "deit_small_patch16_224",
+    "deit_small_distilled": "deit_small_distilled_patch16_224",
+    "deit_base": "deit_base_patch16_224",
+    "deit_base_distilled": "deit_base_distilled_patch16_224",
     # Swin models
     "swin_tiny": "swin_tiny_patch4_window7_224",
     "swin_small": "swin_small_patch4_window7_224",
@@ -17,29 +23,38 @@ SUPPORTED_MODELS: dict[str, str] = {
 
 
 def print_supported_models() -> None:
-    """Display supported models and usage examples."""
-    print("\n" + "=" * 60)
-    print("SUPPORTED MODELS")
-    print("=" * 60)
+    print(f"""
+============================================================
+SUPPORTED MODELS
+============================================================
 
-    print("\nVision Transformer (ViT):")
-    print("  - vit_tiny")
-    print("  - vit_small")
-    print("  - vit_base")
-    print("  - vit_large")
-    print("  - vit_huge")
+Vision Transformer (ViT):
+  - vit_tiny
+  - vit_small
+  - vit_base
+  - vit_large
+  - vit_huge
 
-    print("\nSwin Transformer:")
-    print("  - swin_tiny")
-    print("  - swin_small")
-    print("  - swin_base")
-    print("  - swin_large")
+DeiT (Data-efficient Image Transformers):
+  - deit_tiny
+  - deit_small
+  - deit_small_distilled
+  - deit_base
+  - deit_base_distilled
 
-    print("\nBEiT:")
-    print("  - beit_base")
-    print("  - beit_large")
+Swin Transformer:
+  - swin_tiny
+  - swin_small
+  - swin_base
+  - swin_large
 
-    print("\n" + "=" * 60)
-    print("Usage: python runner.py --model <model_name> [options]")
-    print("Example: python runner.py --model vit_base --faultfree --metrics")
-    print("=" * 60 + "\n")
+BEiT:
+  - beit_base
+  - beit_large
+
+============================================================
+Usage: python runner.py --model <model_name> [options]
+Example: python runner.py --model vit_base --faultfree --metrics
+============================================================
+""")
+

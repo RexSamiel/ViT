@@ -138,7 +138,6 @@ def main():
     save_logits = args.save_logits.lower() in ("true", "1", "yes", "y")
     config = Config()
 
-    # Validate model
     if args.model not in SUPPORTED_MODELS:
         print(f"Error: '{args.model}' is not supported.")
         print_supported_models()
@@ -158,14 +157,14 @@ def main():
                 idx=args.idx,
                 block_idx=args.block_idx,
                 bit_range=bit_range,
-                verbose=True,  # Always show fault info in single run
+                verbose=True,
             )
-            print("✓ Fault injection applied.\n")
+            print("Fault injection applied.\n")
 
         runner.run(
             compute_metrics=True,
             save_logits=save_logits,
-            verbose=True,  # Print results in single run
+            verbose=True,
             compute_sdc=(args.mode == "faulty"),
         )
 

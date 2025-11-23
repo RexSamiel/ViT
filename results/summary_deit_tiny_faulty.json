@@ -1,0 +1,98 @@
+[
+  {
+    "total_runs": 10,
+    "avg_top1_acc": 54.8,
+    "avg_top5_acc": 75.5,
+    "avg_logit_sdc": 89.99969959259033,
+    "avg_pred_sdc": 28.700000047683716,
+    "avg_pred_top5_sdc": 84.89999949932098,
+    "avg_msdc": 0.5564044250382317,
+    "msdc_counted_runs": 9,
+    "msdc_skipped_runs": 1,
+    "high_risk_pct": 100.0,
+    "high_risk_count": 10,
+    "medium_risk_pct": 0.0,
+    "medium_risk_count": 0,
+    "safe_pct": 0.0,
+    "safe_count": 0,
+    "timestamp": "2025-11-24T00:23:48.532690",
+    "config": {
+      "model": "deit_tiny",
+      "mode": "faulty",
+      "repeat": 10,
+      "samples_per_run": 100,
+      "batch_size": 100,
+      "max_batches": 1,
+      "idx": null,
+      "block_idx": 10,
+      "bit_range": [
+        30,
+        30
+      ]
+    }
+  },
+  {
+    "total_runs": 10,
+    "avg_top1_acc": 59.3,
+    "avg_top5_acc": 85.5,
+    "avg_logit_sdc": 100.0,
+    "avg_pred_sdc": 21.400000154972076,
+    "avg_pred_top5_sdc": 83.49999964237213,
+    "avg_msdc": 0.5474944651126862,
+    "msdc_counted_runs": 10,
+    "msdc_skipped_runs": 0,
+    "high_risk_pct": 100.0,
+    "high_risk_count": 10,
+    "medium_risk_pct": 0.0,
+    "medium_risk_count": 0,
+    "safe_pct": 0.0,
+    "safe_count": 0,
+    "timestamp": "2025-11-24T00:25:22.681230",
+    "config": {
+      "model": "deit_tiny",
+      "mode": "faulty",
+      "repeat": 10,
+      "samples_per_run": 100,
+      "batch_size": 100,
+      "max_batches": 1,
+      "idx": null,
+      "block_idx": 10,
+      "bit_range": [
+        30,
+        30
+      ]
+    }
+  },
+  {
+    "total_runs": 10,
+    "avg_top1_acc": 46.7,
+    "avg_top5_acc": 67.9,
+    "avg_logit_sdc": 79.99989986419678,
+    "avg_pred_sdc": 37.80000001192093,
+    "avg_pred_top5_sdc": 86.60000085830688,
+    "avg_msdc": 0.5551222339272499,
+    "msdc_counted_runs": 8,
+    "msdc_skipped_runs": 2,
+    "high_risk_pct": 100.0,
+    "high_risk_count": 10,
+    "medium_risk_pct": 0.0,
+    "medium_risk_count": 0,
+    "safe_pct": 0.0,
+    "safe_count": 0,
+    "timestamp": "2025-11-24T00:25:37.666800",
+    "config": {
+      "model": "deit_tiny",
+      "mode": "faulty",
+      "repeat": 10,
+      "samples_per_run": 100,
+      "batch_size": 100,
+      "max_batches": 1,
+      "idx": null,
+      "block_idx": 10,
+      "bit_range": [
+        30,
+        30
+      ]
+    }
+  }
+]

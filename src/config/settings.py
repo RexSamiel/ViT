@@ -1,6 +1,3 @@
-# settings.py
-# Configuration definitions for ViT fault injection experiments
-
 import os
 import torch
 from dataclasses import dataclass, field

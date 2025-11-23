@@ -5,20 +5,18 @@ import numpy as np
 
 def get_num_blocks(model):
     if hasattr(model, "blocks"):
-        return len(model.blocks)  # ViT / BEiT
+        return len(model.blocks)
     elif hasattr(model, "layers"):
-        return sum(len(layer.blocks) for layer in model.layers)  # Swin
+        return sum(len(layer.blocks) for layer in model.layers)
     else:
         raise ValueError("Model does not have blocks or layers[].blocks")
 
 
 def get_block(model, block_idx):
-    """Return the block by a flat index regardless of model type."""
     if hasattr(model, "blocks"):
         return model.blocks[block_idx]  # ViT / BEiT
 
     elif hasattr(model, "layers"):  # Swin
-        # Flatten (layer, block) indexing
         for layer in model.layers:
             if block_idx < len(layer.blocks):
                 return layer.blocks[block_idx]
@@ -85,7 +83,7 @@ def inject_fault(
     if block_idx is None:
         block_idx = random.randint(0, total_blocks - 1)
 
-    block = get_block(model, block_idx)  # <--- universal access
+    block = get_block(model, block_idx)
 
     if component_type == "all":
         component_type = random.choice(
@@ -129,13 +127,12 @@ def inject_fault(
     if idx is None:
         idx = tuple(random.randint(0, s - 1) for s in param.shape)
 
-    # Flip bit
+    print(param_full_name)
     original_value = param[idx].clone()
     corrupted_value, bit_flipped, original_bits, corrupted_bits = flip_random_bit(
         original_value, bit_range
     )
 
-    # Inject
     with torch.no_grad():
         param[idx] = corrupted_value
 
@@ -173,4 +170,3 @@ Corrupted Bits:
 """)
 
     return fault_info
-
