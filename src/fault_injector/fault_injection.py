@@ -127,7 +127,6 @@ def inject_fault(
     if idx is None:
         idx = tuple(random.randint(0, s - 1) for s in param.shape)
 
-    print(param_full_name)
     original_value = param[idx].clone()
     corrupted_value, bit_flipped, original_bits, corrupted_bits = flip_random_bit(
         original_value, bit_range

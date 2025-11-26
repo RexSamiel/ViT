@@ -217,6 +217,7 @@ class Runner:
                         images = images.float()
 
                     labels_clone = labels.clone()
+
                     outputs = self.evaluator.model(images)
                     nan_logits_mask = torch.isnan(outputs).all(dim=1)
                     num_all_nan = nan_logits_mask.sum().item()
