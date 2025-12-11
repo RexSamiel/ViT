@@ -16,16 +16,25 @@ class RunAnalyzer:
         # Logit SDC metrics
         self.avg_logit_sdc = 0.0
 
-        # SDC threshold metrics
+        # SDC threshold metrics with counters
         self.avg_sdc_1pct = 0.0
+        self.sdc_1pct_counted = 0
         self.avg_sdc_5pct = 0.0
+        self.sdc_5pct_counted = 0
         self.avg_sdc_10pct = 0.0
+        self.sdc_10pct_counted = 0
         self.avg_sdc_15pct = 0.0
+        self.sdc_15pct_counted = 0
         self.avg_sdc_25pct = 0.0
+        self.sdc_25pct_counted = 0
         self.avg_sdc_50pct = 0.0
+        self.sdc_50pct_counted = 0
         self.avg_sdc_75pct = 0.0
+        self.sdc_75pct_counted = 0
         self.avg_sdc_100pct = 0.0
+        self.sdc_100pct_counted = 0
         self.avg_sdc_200pct = 0.0
+        self.sdc_200pct_counted = 0
 
         # MSDC metrics
         self.avg_msdc = 0.0
@@ -71,35 +80,68 @@ class RunAnalyzer:
             self.avg_logit_sdc * (self.n_runs - 1) + logit_sdc
         ) / self.n_runs
 
-        # SDC threshold metrics
-        self.avg_sdc_1pct = (
-            self.avg_sdc_1pct * (self.n_runs - 1) + run_result.get("sdc_1pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_5pct = (
-            self.avg_sdc_5pct * (self.n_runs - 1) + run_result.get("sdc_5pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_10pct = (
-            self.avg_sdc_10pct * (self.n_runs - 1) + run_result.get("sdc_10pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_15pct = (
-            self.avg_sdc_15pct * (self.n_runs - 1) + run_result.get("sdc_15pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_25pct = (
-            self.avg_sdc_25pct * (self.n_runs - 1) + run_result.get("sdc_25pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_50pct = (
-            self.avg_sdc_50pct * (self.n_runs - 1) + run_result.get("sdc_50pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_75pct = (
-            self.avg_sdc_75pct * (self.n_runs - 1) + run_result.get("sdc_75pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_100pct = (
-            self.avg_sdc_100pct * (self.n_runs - 1) + run_result.get("sdc_100pct", 0.0)
-        ) / self.n_runs
-        self.avg_sdc_200pct = (
-            self.avg_sdc_200pct * (self.n_runs - 1) + run_result.get("sdc_200pct", 0.0)
-        ) / self.n_runs
+        sdc_1pct = run_result.get("sdc_1pct", 0.0)
+        if not math.isnan(sdc_1pct):
+            self.sdc_1pct_counted += 1
+            self.avg_sdc_1pct = (
+                self.avg_sdc_1pct * (self.sdc_1pct_counted - 1) + sdc_1pct
+            ) / self.sdc_1pct_counted
 
+        sdc_5pct = run_result.get("sdc_5pct", 0.0)
+        if not math.isnan(sdc_5pct):
+            self.sdc_5pct_counted += 1
+            self.avg_sdc_5pct = (
+                self.avg_sdc_5pct * (self.sdc_5pct_counted - 1) + sdc_5pct
+            ) / self.sdc_5pct_counted
+
+        sdc_10pct = run_result.get("sdc_10pct", 0.0)
+        if not math.isnan(sdc_10pct):
+            self.sdc_10pct_counted += 1
+            self.avg_sdc_10pct = (
+                self.avg_sdc_10pct * (self.sdc_10pct_counted - 1) + sdc_10pct
+            ) / self.sdc_10pct_counted
+
+        sdc_15pct = run_result.get("sdc_15pct", 0.0)
+        if not math.isnan(sdc_15pct):
+            self.sdc_15pct_counted += 1
+            self.avg_sdc_15pct = (
+                self.avg_sdc_15pct * (self.sdc_15pct_counted - 1) + sdc_15pct
+            ) / self.sdc_15pct_counted
+
+        sdc_25pct = run_result.get("sdc_25pct", 0.0)
+        if not math.isnan(sdc_25pct):
+            self.sdc_25pct_counted += 1
+            self.avg_sdc_25pct = (
+                self.avg_sdc_25pct * (self.sdc_25pct_counted - 1) + sdc_25pct
+            ) / self.sdc_25pct_counted
+
+        sdc_50pct = run_result.get("sdc_50pct", 0.0)
+        if not math.isnan(sdc_50pct):
+            self.sdc_50pct_counted += 1
+            self.avg_sdc_50pct = (
+                self.avg_sdc_50pct * (self.sdc_50pct_counted - 1) + sdc_50pct
+            ) / self.sdc_50pct_counted
+
+        sdc_75pct = run_result.get("sdc_75pct", 0.0)
+        if not math.isnan(sdc_75pct):
+            self.sdc_75pct_counted += 1
+            self.avg_sdc_75pct = (
+                self.avg_sdc_75pct * (self.sdc_75pct_counted - 1) + sdc_75pct
+            ) / self.sdc_75pct_counted
+
+        sdc_100pct = run_result.get("sdc_100pct", 0.0)
+        if not math.isnan(sdc_100pct):
+            self.sdc_100pct_counted += 1
+            self.avg_sdc_100pct = (
+                self.avg_sdc_100pct * (self.sdc_100pct_counted - 1) + sdc_100pct
+            ) / self.sdc_100pct_counted
+
+        sdc_200pct = run_result.get("sdc_200pct", 0.0)
+        if not math.isnan(sdc_200pct):
+            self.sdc_200pct_counted += 1
+            self.avg_sdc_200pct = (
+                self.avg_sdc_200pct * (self.sdc_200pct_counted - 1) + sdc_200pct
+            ) / self.sdc_200pct_counted
         #  MSDC Metrics
         msdc = run_result.get("msdc_avg", None)
 

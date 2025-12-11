@@ -70,7 +70,8 @@ def format_ieee754_bits(bits_str: str) -> str:
 
 def inject_fault(
     model,
-    component_type="mlp",
+    component_type="attention",
+    sub_component=None,  # NEW: Specify qkv, proj, fc1, fc2, etc.
     block_idx=None,
     idx=None,
     bit_range=None,
@@ -80,7 +81,6 @@ def inject_fault(
 
     total_blocks = get_num_blocks(model)
 
-    print(component_type)
     if block_idx is None:
         block_idx = random.randint(0, total_blocks - 1)
 
@@ -88,26 +88,56 @@ def inject_fault(
 
     if component_type == "all":
         component_type = random.choice(
-            ["attention", "norm", "mlp", "patch_embed", "classifier"]
+            ["attention", "mlp", "norm", "patch_embed", "classifier"]
         )
 
     if component_type == "attention":
         attn = block.attn
+
+        attn_params = {
+            "qkv": ["qkv.weight"],
+            "proj": ["proj.weight"],
+        }
+
+        if sub_component is None:
+            sub_component = random.choice(list(attn_params.keys()))
+        elif sub_component not in attn_params:
+            raise ValueError(
+                f"Invalid attention sub_component: {sub_component}. "
+                f"Choose from: {list(attn_params.keys())}"
+            )
+
         for name, param in attn.named_parameters():
-            if name == "qkv.weight":
+            if name in attn_params[sub_component]:
                 available_params.append((f"Block{block_idx}.attn.{name}", param))
+
+    elif component_type == "mlp":
+        mlp = block.mlp
+
+        mlp_params = {
+            "fc1": ["fc1.weight"],
+            "fc2": ["fc2.weight"],
+        }
+
+        # Choose sub-component
+        if sub_component is None:
+            sub_component = random.choice(list(mlp_params.keys()))
+        elif sub_component not in mlp_params:
+            raise ValueError(
+                f"Invalid MLP sub_component: {sub_component}. "
+                f"Choose from: {list(mlp_params.keys())}"
+            )
+
+        # Collect parameters for chosen sub-component
+        for name, param in mlp.named_parameters():
+            if name in mlp_params[sub_component]:
+                available_params.append((f"Block{block_idx}.mlp.{name}", param))
 
     elif component_type == "norm":
         for name, param in block.norm1.named_parameters():
             available_params.append((f"Block{block_idx}.norm1.{name}", param))
         for name, param in block.norm2.named_parameters():
             available_params.append((f"Block{block_idx}.norm2.{name}", param))
-
-    elif component_type == "mlp":
-        mlp = block.mlp
-        for name, param in mlp.named_parameters():
-            if name in ["fc1.weight", "fc2.weight"]:
-                available_params.append((f"Block{block_idx}.mlp.{name}", param))
 
     elif component_type == "patch_embed":
         for name, param in model.patch_embed.named_parameters():
@@ -122,7 +152,10 @@ def inject_fault(
                 available_params.append((f"head.{name}", param))
 
     if not available_params:
-        raise ValueError(f"No suitable params for component_type: {component_type}")
+        raise ValueError(
+            f"No suitable params for component_type: {component_type}, "
+            f"sub_component: {sub_component}"
+        )
 
     param_full_name, param = random.choice(available_params)
     if idx is None:
@@ -138,6 +171,9 @@ def inject_fault(
 
     fault_info = {
         "component_type": component_type,
+        "sub_component": sub_component
+        if component_type in ["attention", "mlp"]
+        else None,
         "block_idx": block_idx,
         "param_name": param_full_name,
         "fault_idx": idx,
@@ -150,10 +186,11 @@ def inject_fault(
     }
 
     if verbose:
+        sub_comp_str = f"\nSub-Component  : {sub_component}" if sub_component else ""
         print(f"""
 Fault Injection Details
 {"-" * 80}
-Component Type : {component_type}
+Component Type : {component_type}{sub_comp_str}
 Block Index    : {block_idx}
 Parameter Name : {param_full_name}
 Fault Index    : {idx}
