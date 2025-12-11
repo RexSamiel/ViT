@@ -24,6 +24,8 @@ class RunAnalyzer:
         self.avg_sdc_25pct = 0.0
         self.avg_sdc_50pct = 0.0
         self.avg_sdc_75pct = 0.0
+        self.avg_sdc_100pct = 0.0
+        self.avg_sdc_200pct = 0.0
 
         # MSDC metrics
         self.avg_msdc = 0.0
@@ -91,6 +93,12 @@ class RunAnalyzer:
         self.avg_sdc_75pct = (
             self.avg_sdc_75pct * (self.n_runs - 1) + run_result.get("sdc_75pct", 0.0)
         ) / self.n_runs
+        self.avg_sdc_100pct = (
+            self.avg_sdc_100pct * (self.n_runs - 1) + run_result.get("sdc_100pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_200pct = (
+            self.avg_sdc_200pct * (self.n_runs - 1) + run_result.get("sdc_200pct", 0.0)
+        ) / self.n_runs
 
         #  MSDC Metrics
         msdc = run_result.get("msdc_avg", None)
@@ -143,6 +151,8 @@ class RunAnalyzer:
             "avg_sdc_25pct": self.avg_sdc_25pct,
             "avg_sdc_50pct": self.avg_sdc_50pct,
             "avg_sdc_75pct": self.avg_sdc_75pct,
+            "avg_sdc_100pct": self.avg_sdc_100pct,
+            "avg_sdc_200pct": self.avg_sdc_200pct,
             # MSDC metrics
             "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
             "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
@@ -200,6 +210,8 @@ class RunAnalyzer:
             f"  Average SDC ≥25%:             {self.avg_sdc_25pct:.2f}%\n"
             f"  Average SDC ≥50%:             {self.avg_sdc_50pct:.2f}%\n"
             f"  Average SDC ≥75%:             {self.avg_sdc_75pct:.2f}%\n"
+            f"  Average SDC ≥100%:             {self.avg_sdc_100pct:.2f}%\n"
+            f"  Average SDC ≥200%:             {self.avg_sdc_200pct:.2f}%\n"
         )
 
         # MSDC section

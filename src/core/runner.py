@@ -31,6 +31,10 @@ class MetricsTracker:
         self.sdc_25_levels = []
         self.sdc_50_levels = []
         self.sdc_75_levels = []
+        self.sdc_50_levels = []
+        self.sdc_75_levels = []
+        self.sdc_100_levels = []
+        self.sdc_200_levels = []
         self.rel_changes = []
 
         self.sdc_magnitudes: list[torch.Tensor] = []
@@ -62,7 +66,6 @@ class MetricsTracker:
         sdc_magnitude = diff.abs().mean(dim=1)
         self.sdc_magnitudes.append(sdc_magnitude.cpu())
 
-        print(sdc_rate)
         relative_change = diff.abs().mean(dim=1) / ff_logits.abs().mean(dim=1)
 
         sdc_1 = (relative_change >= 0.01).float()
@@ -72,6 +75,8 @@ class MetricsTracker:
         sdc_25 = (relative_change >= 0.25).float()
         sdc_50 = (relative_change >= 0.50).float()
         sdc_75 = (relative_change >= 0.75).float()
+        sdc_100 = (relative_change >= 1.00).float()
+        sdc_200 = (relative_change >= 2.00).float()
 
         self.sdc_1_levels.append(sdc_1.cpu())
         self.sdc_5_levels.append(sdc_5.cpu())
@@ -80,6 +85,8 @@ class MetricsTracker:
         self.sdc_25_levels.append(sdc_25.cpu())
         self.sdc_50_levels.append(sdc_50.cpu())
         self.sdc_75_levels.append(sdc_75.cpu())
+        self.sdc_100_levels.append(sdc_100.cpu())
+        self.sdc_200_levels.append(sdc_200.cpu())
 
         pred_faulty = faulty_logits.argmax(dim=1)
         pred_ff = ff_logits.argmax(dim=1)
@@ -123,6 +130,8 @@ class MetricsTracker:
             results["sdc_25pct"] = 0.0
             results["sdc_50pct"] = 0.0
             results["sdc_75pct"] = 0.0
+            results["sdc_100pct"] = 0.0
+            results["sdc_200pct"] = 0.0
             return results
 
         results["logit_sdc_rate"] = 100 * torch.cat(self.sdc_rates).mean().item()
@@ -142,6 +151,8 @@ class MetricsTracker:
         results["sdc_25pct"] = 100 * torch.cat(self.sdc_25_levels).mean().item()
         results["sdc_50pct"] = 100 * torch.cat(self.sdc_50_levels).mean().item()
         results["sdc_75pct"] = 100 * torch.cat(self.sdc_75_levels).mean().item()
+        results["sdc_100pct"] = 100 * torch.cat(self.sdc_100_levels).mean().item()
+        results["sdc_200pct"] = 100 * torch.cat(self.sdc_200_levels).mean().item()
 
         return results
 
@@ -314,6 +325,8 @@ class Runner:
             print(f"SDC ≥25%:             {results['sdc_25pct']:.2f}%")
             print(f"SDC ≥50%:             {results['sdc_50pct']:.2f}%")
             print(f"SDC ≥75%:             {results['sdc_75pct']:.2f}%")
+            print(f"SDC ≥100%:             {results['sdc_100pct']:.2f}%")
+            print(f"SDC ≥200%:             {results['sdc_200pct']:.2f}%")
             print(f"Top-1 Prediction SDC: {results['pred_sdc_rate']:.2f}%")
             print(f"Top-5 Prediction SDC: {results['pred_top5_sdc_rate']:.2f}%")
 

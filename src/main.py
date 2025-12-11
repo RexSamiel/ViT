@@ -38,7 +38,7 @@ class ExperimentManager:
             )
             if abs(current_val - self.debug_weights["block1_qkv_sample"]) > 1e-6:
                 print(
-                    f"⚠️  DEBUG: Model was modified (weight changed from "
+                    f"DEBUG: Model was modified (weight changed from "
                     f"{self.debug_weights['block1_qkv_sample']:.8f} to {current_val:.8f})"
                 )
 
@@ -367,4 +367,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
