@@ -16,6 +16,15 @@ class RunAnalyzer:
         # Logit SDC metrics
         self.avg_logit_sdc = 0.0
 
+        # SDC threshold metrics
+        self.avg_sdc_1pct = 0.0
+        self.avg_sdc_5pct = 0.0
+        self.avg_sdc_10pct = 0.0
+        self.avg_sdc_15pct = 0.0
+        self.avg_sdc_25pct = 0.0
+        self.avg_sdc_50pct = 0.0
+        self.avg_sdc_75pct = 0.0
+
         # MSDC metrics
         self.avg_msdc = 0.0
         self.worst_msdc = 0.0
@@ -58,6 +67,29 @@ class RunAnalyzer:
 
         self.avg_logit_sdc = (
             self.avg_logit_sdc * (self.n_runs - 1) + logit_sdc
+        ) / self.n_runs
+
+        # SDC threshold metrics
+        self.avg_sdc_1pct = (
+            self.avg_sdc_1pct * (self.n_runs - 1) + run_result.get("sdc_1pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_5pct = (
+            self.avg_sdc_5pct * (self.n_runs - 1) + run_result.get("sdc_5pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_10pct = (
+            self.avg_sdc_10pct * (self.n_runs - 1) + run_result.get("sdc_10pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_15pct = (
+            self.avg_sdc_15pct * (self.n_runs - 1) + run_result.get("sdc_15pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_25pct = (
+            self.avg_sdc_25pct * (self.n_runs - 1) + run_result.get("sdc_25pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_50pct = (
+            self.avg_sdc_50pct * (self.n_runs - 1) + run_result.get("sdc_50pct", 0.0)
+        ) / self.n_runs
+        self.avg_sdc_75pct = (
+            self.avg_sdc_75pct * (self.n_runs - 1) + run_result.get("sdc_75pct", 0.0)
         ) / self.n_runs
 
         #  MSDC Metrics
@@ -104,6 +136,13 @@ class RunAnalyzer:
             "worst_top5_nonzero": self.worst_top5_nonzero if self.n_runs > 0 else None,
             # Logit SDC metrics
             "avg_logit_sdc": self.avg_logit_sdc,
+            "avg_sdc_1pct": self.avg_sdc_1pct,
+            "avg_sdc_5pct": self.avg_sdc_5pct,
+            "avg_sdc_10pct": self.avg_sdc_10pct,
+            "avg_sdc_15pct": self.avg_sdc_15pct,
+            "avg_sdc_25pct": self.avg_sdc_25pct,
+            "avg_sdc_50pct": self.avg_sdc_50pct,
+            "avg_sdc_75pct": self.avg_sdc_75pct,
             # MSDC metrics
             "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
             "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
@@ -129,19 +168,38 @@ class RunAnalyzer:
         safe_pct = 100 * self.safe / self.n_runs if self.n_runs else 0.0
 
         output = (
-            "\n============================================================\n"
             "ANALYSIS OF MULTI-RUN EXPERIMENT\n"
-            "============================================================\n"
             f"Total runs: {self.n_runs}\n"
             "\nAccuracy Metrics:\n"
             f"  Average Top-1 Accuracy:       {self.avg_top1:.2f}%\n"
             f"  Average Top-5 Accuracy:       {self.avg_top5:.2f}%\n"
-            f"  Worst Top-1 Accuracy:         {self.worst_top1:.2f}%\n"
-            f"  Worst Top-5 Accuracy:         {self.worst_top5:.2f}%\n"
-            f"  Worst Top-1 (non-zero):       {self.worst_top1_nonzero:.2f}%\n"
-            f"  Worst Top-5 (non-zero):       {self.worst_top5_nonzero:.2f}%\n"
+        )
+
+        # Only show worst accuracies
+        if self.worst_top1 > 0.0:
+            output += f"  Worst Top-1 Accuracy:         {self.worst_top1:.2f}%\n"
+        else:
+            output += (
+                f"  Worst Top-1 Accuracy (non-zero): {self.worst_top1_nonzero:.2f}%\n"
+            )
+
+        if self.worst_top5 > 0.0:
+            output += f"  Worst Top-5 Accuracy:         {self.worst_top5:.2f}%\n"
+        else:
+            output += (
+                f"  Worst Top-5 Accuracy (non-zero): {self.worst_top5_nonzero:.2f}%\n"
+            )
+
+        output += (
             "\nLogit SDC Metrics:\n"
             f"  Average Logit SDC Rate:       {self.avg_logit_sdc:.2f}%\n"
+            f"  Average SDC ≥1%:              {self.avg_sdc_1pct:.2f}%\n"
+            f"  Average SDC ≥5%:              {self.avg_sdc_5pct:.2f}%\n"
+            f"  Average SDC ≥10%:             {self.avg_sdc_10pct:.2f}%\n"
+            f"  Average SDC ≥15%:             {self.avg_sdc_15pct:.2f}%\n"
+            f"  Average SDC ≥25%:             {self.avg_sdc_25pct:.2f}%\n"
+            f"  Average SDC ≥50%:             {self.avg_sdc_50pct:.2f}%\n"
+            f"  Average SDC ≥75%:             {self.avg_sdc_75pct:.2f}%\n"
         )
 
         # MSDC section
@@ -175,4 +233,3 @@ class RunAnalyzer:
         )
 
         print(output)
-

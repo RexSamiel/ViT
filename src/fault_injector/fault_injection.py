@@ -70,7 +70,7 @@ def format_ieee754_bits(bits_str: str) -> str:
 
 def inject_fault(
     model,
-    component_type="attention",
+    component_type="mlp",
     block_idx=None,
     idx=None,
     bit_range=None,
@@ -80,6 +80,7 @@ def inject_fault(
 
     total_blocks = get_num_blocks(model)
 
+    print(component_type)
     if block_idx is None:
         block_idx = random.randint(0, total_blocks - 1)
 
@@ -105,7 +106,7 @@ def inject_fault(
     elif component_type == "mlp":
         mlp = block.mlp
         for name, param in mlp.named_parameters():
-            if name in ["fc1.weight", "fc1.bias", "fc2.weight", "fc2.bias"]:
+            if name in ["fc1.weight", "fc2.weight"]:
                 available_params.append((f"Block{block_idx}.mlp.{name}", param))
 
     elif component_type == "patch_embed":

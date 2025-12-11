@@ -4,10 +4,9 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from dataclasses import dataclass
 import timm
-from timm.data import resolve_data_config, create_transform
+from timm.data.config import resolve_data_config
+from timm.data.transforms_factory import create_transform
 import functools
-import typing
-import os
 import time
 
 from src.utils.logits import FaultFreeLogits
@@ -23,7 +22,17 @@ class MetricsTracker:
         self.total_samples: int = 0
         self.top1_correct: float = 0.0
         self.top5_correct: float = 0.0
+
         self.sdc_rates: list[torch.Tensor] = []
+        self.sdc_1_levels = []
+        self.sdc_5_levels = []
+        self.sdc_10_levels = []
+        self.sdc_15_levels = []
+        self.sdc_25_levels = []
+        self.sdc_50_levels = []
+        self.sdc_75_levels = []
+        self.rel_changes = []
+
         self.sdc_magnitudes: list[torch.Tensor] = []
         self.pred_sdc_rates: list[float] = []
         self.pred_top5_sdc_rates: list[float] = []
@@ -46,15 +55,34 @@ class MetricsTracker:
         labels: torch.Tensor,
     ) -> None:
         diff = ff_logits - faulty_logits
-        threshold = 1e-6
-        sdc_rate = (diff.abs() > threshold).float().mean(dim=1)
-        sdc_magnitude = diff.abs().mean(dim=1)
+
+        sdc_rate = (diff != 0).float().mean(dim=1)
         self.sdc_rates.append(sdc_rate.cpu())
+
+        sdc_magnitude = diff.abs().mean(dim=1)
         self.sdc_magnitudes.append(sdc_magnitude.cpu())
+
+        print(sdc_rate)
+        relative_change = diff.abs().mean(dim=1) / ff_logits.abs().mean(dim=1)
+
+        sdc_1 = (relative_change >= 0.01).float()
+        sdc_5 = (relative_change >= 0.05).float()
+        sdc_10 = (relative_change >= 0.10).float()
+        sdc_15 = (relative_change >= 0.15).float()
+        sdc_25 = (relative_change >= 0.25).float()
+        sdc_50 = (relative_change >= 0.50).float()
+        sdc_75 = (relative_change >= 0.75).float()
+
+        self.sdc_1_levels.append(sdc_1.cpu())
+        self.sdc_5_levels.append(sdc_5.cpu())
+        self.sdc_10_levels.append(sdc_10.cpu())
+        self.sdc_15_levels.append(sdc_15.cpu())
+        self.sdc_25_levels.append(sdc_25.cpu())
+        self.sdc_50_levels.append(sdc_50.cpu())
+        self.sdc_75_levels.append(sdc_75.cpu())
 
         pred_faulty = faulty_logits.argmax(dim=1)
         pred_ff = ff_logits.argmax(dim=1)
-
         pred_changed = pred_faulty != pred_ff
         pred_sdc = pred_changed.float().mean()
         self.pred_sdc_rates.append(pred_sdc.item())
@@ -88,6 +116,13 @@ class MetricsTracker:
             results["msdc_avg"] = 0.0
             results["pred_sdc_rate"] = 0.0
             results["pred_top5_sdc_rate"] = 0.0
+            results["sdc_1pct"] = 0.0
+            results["sdc_5pct"] = 0.0
+            results["sdc_10pct"] = 0.0
+            results["sdc_15pct"] = 0.0
+            results["sdc_25pct"] = 0.0
+            results["sdc_50pct"] = 0.0
+            results["sdc_75pct"] = 0.0
             return results
 
         results["logit_sdc_rate"] = 100 * torch.cat(self.sdc_rates).mean().item()
@@ -98,6 +133,15 @@ class MetricsTracker:
         results["pred_top5_sdc_rate"] = (
             100 * sum(self.pred_top5_sdc_rates) / len(self.pred_top5_sdc_rates)
         )
+
+        # Add threshold-based SDC percentages
+        results["sdc_1pct"] = 100 * torch.cat(self.sdc_1_levels).mean().item()
+        results["sdc_5pct"] = 100 * torch.cat(self.sdc_5_levels).mean().item()
+        results["sdc_10pct"] = 100 * torch.cat(self.sdc_10_levels).mean().item()
+        results["sdc_15pct"] = 100 * torch.cat(self.sdc_15_levels).mean().item()
+        results["sdc_25pct"] = 100 * torch.cat(self.sdc_25_levels).mean().item()
+        results["sdc_50pct"] = 100 * torch.cat(self.sdc_50_levels).mean().item()
+        results["sdc_75pct"] = 100 * torch.cat(self.sdc_75_levels).mean().item()
 
         return results
 
@@ -124,10 +168,9 @@ class ModelEvaluator:
 
     def _create_dataloader(self) -> DataLoader:
         try:
-            data_cfg = resolve_data_config(self.model.default_cfg)
+            data_cfg = resolve_data_config(self.model.pretrained_cfg)
             transform = create_transform(is_training=False, **data_cfg)
         except Exception:
-            # Fallback to a standard ImageNet transform if timm helpers fail
             transform = transforms.Compose(
                 [
                     transforms.Resize(256),
@@ -264,6 +307,13 @@ class Runner:
         if results.get("logit_sdc_rate", 0.0) > 0:
             print(f"Logit SDC Rate:       {results['logit_sdc_rate']:.2f}%")
             print(f"MSDC Average:         {results['msdc_avg']:.6f}")
+            print(f"SDC ≥1%:              {results['sdc_1pct']:.2f}%")
+            print(f"SDC ≥5%:              {results['sdc_5pct']:.2f}%")
+            print(f"SDC ≥10%:             {results['sdc_10pct']:.2f}%")
+            print(f"SDC ≥15%:             {results['sdc_15pct']:.2f}%")
+            print(f"SDC ≥25%:             {results['sdc_25pct']:.2f}%")
+            print(f"SDC ≥50%:             {results['sdc_50pct']:.2f}%")
+            print(f"SDC ≥75%:             {results['sdc_75pct']:.2f}%")
             print(f"Top-1 Prediction SDC: {results['pred_sdc_rate']:.2f}%")
             print(f"Top-5 Prediction SDC: {results['pred_top5_sdc_rate']:.2f}%")
 
