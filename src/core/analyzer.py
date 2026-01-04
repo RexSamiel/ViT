@@ -25,16 +25,12 @@ class RunAnalyzer:
         self.sdc_10pct_counted = 0
         self.avg_sdc_15pct = 0.0
         self.sdc_15pct_counted = 0
+        self.avg_sdc_20pct = 0.0
+        self.sdc_20pct_counted = 0
         self.avg_sdc_25pct = 0.0
         self.sdc_25pct_counted = 0
         self.avg_sdc_50pct = 0.0
         self.sdc_50pct_counted = 0
-        self.avg_sdc_75pct = 0.0
-        self.sdc_75pct_counted = 0
-        self.avg_sdc_100pct = 0.0
-        self.sdc_100pct_counted = 0
-        self.avg_sdc_200pct = 0.0
-        self.sdc_200pct_counted = 0
 
         # MSDC metrics
         self.avg_msdc = 0.0
@@ -43,9 +39,9 @@ class RunAnalyzer:
         self.msdc_skipped = 0
         self.msdc_threshold = msdc_threshold
 
-        # Prediction SDC metrics
-        self.avg_pred_sdc = 0.0
-        self.avg_pred_top5_sdc = 0.0
+        # Critical SDC metrics
+        self.avg_critical_top1_sdc = 0.0
+        self.avg_critical_top5_sdc = 0.0
 
         # Risk categories
         self.high_risk = 0
@@ -108,6 +104,13 @@ class RunAnalyzer:
                 self.avg_sdc_15pct * (self.sdc_15pct_counted - 1) + sdc_15pct
             ) / self.sdc_15pct_counted
 
+        sdc_20pct = run_result.get("sdc_20pct", 0.0)
+        if not math.isnan(sdc_20pct):
+            self.sdc_20pct_counted += 1
+            self.avg_sdc_20pct = (
+                self.avg_sdc_20pct * (self.sdc_20pct_counted - 1) + sdc_20pct
+            ) / self.sdc_20pct_counted
+
         sdc_25pct = run_result.get("sdc_25pct", 0.0)
         if not math.isnan(sdc_25pct):
             self.sdc_25pct_counted += 1
@@ -122,27 +125,7 @@ class RunAnalyzer:
                 self.avg_sdc_50pct * (self.sdc_50pct_counted - 1) + sdc_50pct
             ) / self.sdc_50pct_counted
 
-        sdc_75pct = run_result.get("sdc_75pct", 0.0)
-        if not math.isnan(sdc_75pct):
-            self.sdc_75pct_counted += 1
-            self.avg_sdc_75pct = (
-                self.avg_sdc_75pct * (self.sdc_75pct_counted - 1) + sdc_75pct
-            ) / self.sdc_75pct_counted
-
-        sdc_100pct = run_result.get("sdc_100pct", 0.0)
-        if not math.isnan(sdc_100pct):
-            self.sdc_100pct_counted += 1
-            self.avg_sdc_100pct = (
-                self.avg_sdc_100pct * (self.sdc_100pct_counted - 1) + sdc_100pct
-            ) / self.sdc_100pct_counted
-
-        sdc_200pct = run_result.get("sdc_200pct", 0.0)
-        if not math.isnan(sdc_200pct):
-            self.sdc_200pct_counted += 1
-            self.avg_sdc_200pct = (
-                self.avg_sdc_200pct * (self.sdc_200pct_counted - 1) + sdc_200pct
-            ) / self.sdc_200pct_counted
-        #  MSDC Metrics
+        # MSDC Metrics
         msdc = run_result.get("msdc_avg", None)
 
         if msdc is None or math.isnan(msdc) or msdc > self.msdc_threshold:
@@ -154,21 +137,21 @@ class RunAnalyzer:
             ) / self.msdc_counted
             self.worst_msdc = max(self.worst_msdc, msdc)
 
-        #  Prediction SDC Metrics
-        pred_sdc = run_result.get("pred_sdc_rate", 0.0)
-        pred_top5_sdc = run_result.get("pred_top5_sdc_rate", 0.0)
+        # Critical SDC Metrics
+        critical_top1_sdc = run_result.get("critical_top1_sdc_rate", 0.0)
+        critical_top5_sdc = run_result.get("critical_top5_sdc_rate", 0.0)
 
-        self.avg_pred_sdc = (
-            self.avg_pred_sdc * (self.n_runs - 1) + pred_sdc
+        self.avg_critical_top1_sdc = (
+            self.avg_critical_top1_sdc * (self.n_runs - 1) + critical_top1_sdc
         ) / self.n_runs
-        self.avg_pred_top5_sdc = (
-            self.avg_pred_top5_sdc * (self.n_runs - 1) + pred_top5_sdc
+        self.avg_critical_top5_sdc = (
+            self.avg_critical_top5_sdc * (self.n_runs - 1) + critical_top5_sdc
         ) / self.n_runs
 
-        # Risk Categories
-        if pred_sdc > 0.0:
+        # Risk Categories (based on critical SDC)
+        if critical_top1_sdc > 0.0:
             self.high_risk += 1
-        elif pred_top5_sdc > 0.0:
+        elif critical_top5_sdc > 0.0:
             self.medium_risk += 1
         else:
             self.safe += 1
@@ -190,19 +173,17 @@ class RunAnalyzer:
             "avg_sdc_5pct": self.avg_sdc_5pct,
             "avg_sdc_10pct": self.avg_sdc_10pct,
             "avg_sdc_15pct": self.avg_sdc_15pct,
+            "avg_sdc_20pct": self.avg_sdc_20pct,
             "avg_sdc_25pct": self.avg_sdc_25pct,
             "avg_sdc_50pct": self.avg_sdc_50pct,
-            "avg_sdc_75pct": self.avg_sdc_75pct,
-            "avg_sdc_100pct": self.avg_sdc_100pct,
-            "avg_sdc_200pct": self.avg_sdc_200pct,
             # MSDC metrics
             "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
             "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
             "msdc_counted_runs": self.msdc_counted,
             "msdc_skipped_runs": self.msdc_skipped,
-            # Prediction SDC metrics
-            "avg_pred_sdc": self.avg_pred_sdc,
-            "avg_pred_top5_sdc": self.avg_pred_top5_sdc,
+            # Critical SDC metrics
+            "avg_critical_top1_sdc": self.avg_critical_top1_sdc,
+            "avg_critical_top5_sdc": self.avg_critical_top5_sdc,
             # Risk categories
             "high_risk_count": self.high_risk,
             "high_risk_pct": 100 * self.high_risk / self.n_runs if self.n_runs else 0.0,
@@ -249,11 +230,9 @@ class RunAnalyzer:
             f"  Average SDC ≥5%:              {self.avg_sdc_5pct:.2f}%\n"
             f"  Average SDC ≥10%:             {self.avg_sdc_10pct:.2f}%\n"
             f"  Average SDC ≥15%:             {self.avg_sdc_15pct:.2f}%\n"
+            f"  Average SDC ≥20%:             {self.avg_sdc_20pct:.2f}%\n"
             f"  Average SDC ≥25%:             {self.avg_sdc_25pct:.2f}%\n"
             f"  Average SDC ≥50%:             {self.avg_sdc_50pct:.2f}%\n"
-            f"  Average SDC ≥75%:             {self.avg_sdc_75pct:.2f}%\n"
-            f"  Average SDC ≥100%:             {self.avg_sdc_100pct:.2f}%\n"
-            f"  Average SDC ≥200%:             {self.avg_sdc_200pct:.2f}%\n"
         )
 
         # MSDC section
@@ -269,9 +248,9 @@ class RunAnalyzer:
             output += "\nMSDC Metrics:\n  No valid MSDC values (all runs skipped)\n"
 
         output += (
-            "\nPrediction SDC Metrics:\n"
-            f"  Average Top-1 Pred Change:    {self.avg_pred_sdc:.2f}%\n"
-            f"  Average Top-5 Set Change:     {self.avg_pred_top5_sdc:.2f}%\n"
+            "\nCritical SDC Metrics:\n"
+            f"  Average Critical Top-1 SDC:   {self.avg_critical_top1_sdc:.2f}%\n"
+            f"  Average Critical Top-5 SDC:   {self.avg_critical_top5_sdc:.2f}%\n"
         )
 
         # Risk categories

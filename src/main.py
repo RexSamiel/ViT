@@ -57,8 +57,6 @@ class ExperimentManager:
                 bit_range=bit_range,
                 verbose=self.verbose,
             )
-            if self.verbose:
-                print("Fault injection applied for this run.\n")
 
         results = self.runner.run(
             compute_metrics=True,
@@ -210,7 +208,6 @@ def main():
                 bit_range=bit_range,
                 verbose=True,
             )
-            print("Fault injection applied.\n")
 
         runner.run(
             compute_metrics=True,
@@ -277,3 +274,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
