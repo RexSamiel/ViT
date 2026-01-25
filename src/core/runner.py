@@ -12,6 +12,7 @@ import time
 from src.utils.logits import FaultFreeLogits
 from src.data.imagenet_loader import ImageNetValDataset
 from src.config.settings import Config
+from src.utils.formatting import print_run_results
 
 
 class MetricsTracker:
@@ -34,7 +35,6 @@ class MetricsTracker:
 
         self.sdc_magnitudes: list[torch.Tensor] = []
 
-        # Critical SDC: fault-free prediction's logit changed AND this caused prediction to change
         self.critical_top1_sdc_rates: list[float] = []
         self.critical_top5_sdc_rates: list[float] = []
 
@@ -49,138 +49,147 @@ class MetricsTracker:
 
         self.total_samples += batch_size
 
+    def _logit_sdc_rate(self, faulty: torch.Tensor, faultfree: torch.Tensor) -> None:
+        """Percentage of logits that changed. NaN counts as changed."""
+        diff = faultfree - faulty
+        sdc_rate = (diff != 0).float().mean(dim=1)
+        self.sdc_rates.append(sdc_rate.detach().cpu())
+
+    def _sdc_magnitude(self, faulty: torch.Tensor, faultfree: torch.Tensor) -> None:
+        """Mean absolute difference between faulty and faultfree logits per sample."""
+        diff = faultfree - faulty
+        magnitude = diff.abs().mean(dim=1)
+        self.sdc_magnitudes.append(magnitude.detach().cpu())
+
+    def _relative_sdc(self, faulty: torch.Tensor, faultfree: torch.Tensor) -> None:
+        """
+        Percentage of samples where relative change >= threshold.
+        relative_change = mean(|diff|) / mean(|faultfree|).
+        Samples with zero mean faultfree logits excluded (division by zero).
+        """
+        diff = faultfree - faulty
+        abs_diff_mean = diff.abs().mean(dim=1)
+        abs_ff_mean = faultfree.abs().mean(dim=1)
+
+        nonzero_mask = abs_ff_mean != 0
+        if not nonzero_mask.any():
+            return
+
+        relative_change = abs_diff_mean[nonzero_mask] / abs_ff_mean[nonzero_mask]
+
+        sdc_levels = (
+            torch.stack(
+                [
+                    (relative_change >= 0.01).float(),
+                    (relative_change >= 0.05).float(),
+                    (relative_change >= 0.10).float(),
+                    (relative_change >= 0.15).float(),
+                    (relative_change >= 0.20).float(),
+                    (relative_change >= 0.25).float(),
+                    (relative_change >= 0.50).float(),
+                ],
+                dim=0,
+            )
+            .detach()
+            .cpu()
+        )
+
+        self.sdc_1_levels.append(sdc_levels[0])
+        self.sdc_5_levels.append(sdc_levels[1])
+        self.sdc_10_levels.append(sdc_levels[2])
+        self.sdc_15_levels.append(sdc_levels[3])
+        self.sdc_20_levels.append(sdc_levels[4])
+        self.sdc_25_levels.append(sdc_levels[5])
+        self.sdc_50_levels.append(sdc_levels[6])
+
+    def _critical_top1_sdc(
+        self, faulty: torch.Tensor, faultfree: torch.Tensor
+    ) -> float:
+        """Samples where faultfree top-1 logit changed AND prediction changed."""
+        pred_faulty = faulty.argmax(dim=1)
+        pred_ff = faultfree.argmax(dim=1)
+        pred_changed = pred_faulty != pred_ff
+
+        batch_idx = torch.arange(faulty.size(0), device=faulty.device)
+        ff_top1_in_faulty = faulty[batch_idx, pred_ff]
+        ff_top1_in_faultfree = faultfree[batch_idx, pred_ff]
+        logit_changed = ff_top1_in_faulty != ff_top1_in_faultfree
+
+        return (logit_changed & pred_changed).float().mean().item()
+
+    def _critical_top5_sdc(
+        self, faulty: torch.Tensor, faultfree: torch.Tensor
+    ) -> float:
+        """Samples where any faultfree top-5 logit changed AND top-5 set changed."""
+        top5_faulty = faulty.topk(5, dim=1)[1]
+        top5_ff = faultfree.topk(5, dim=1)[1]
+
+        top5_ff_sorted, _ = top5_ff.sort(dim=1)
+        top5_faulty_sorted, _ = top5_faulty.sort(dim=1)
+        set_changed = (top5_ff_sorted != top5_faulty_sorted).any(dim=1)
+
+        ff_top5_in_faultfree = torch.gather(faultfree, 1, top5_ff)
+        ff_top5_in_faulty = torch.gather(faulty, 1, top5_ff)
+        logits_changed = (ff_top5_in_faultfree != ff_top5_in_faulty).any(dim=1)
+
+        return (logits_changed & set_changed).float().mean().item()
+
+    def _nan_adjustment(self, nan_mask: torch.Tensor, has_valid: bool) -> None:
+        """
+        NaN outputs = catastrophic failure = 100% critical SDC.
+        Adjusts critical rates: weighted average of valid samples + NaN samples (100%).
+        """
+        num_nan = nan_mask.sum().item()
+        total = nan_mask.size(0)
+
+        if has_valid:
+            num_valid = total - num_nan
+            self.critical_top1_sdc_rates[-1] = (
+                self.critical_top1_sdc_rates[-1] * num_valid + num_nan
+            ) / total
+            self.critical_top5_sdc_rates[-1] = (
+                self.critical_top5_sdc_rates[-1] * num_valid + num_nan
+            ) / total
+        else:
+            self.critical_top1_sdc_rates.append(1.0)
+            self.critical_top5_sdc_rates.append(1.0)
+
     def update_sdc(
         self,
         faulty_logits: torch.Tensor,
         ff_logits: torch.Tensor,
         labels: torch.Tensor,
     ) -> None:
-        # Ensure both tensors have the same batch size (handle truncated batches)
+        """Update all SDC metrics comparing faulty vs fault-free logits."""
+        # Align batch sizes
         batch_size = min(faulty_logits.size(0), ff_logits.size(0))
-        faulty_logits = faulty_logits[:batch_size]
-        ff_logits = ff_logits[:batch_size]
-        labels = labels[:batch_size]
+        faulty_all = faulty_logits[:batch_size]
+        faultfree_all = ff_logits[:batch_size]
 
-        # Detect samples with all-NaN faulty logits
-        nan_mask = torch.isnan(faulty_logits).all(dim=1)
+        # Separate valid (non-NaN) samples
+        nan_mask = torch.isnan(faulty_all).all(dim=1)
+        has_valid = (~nan_mask).any()
 
-        # Always compute logit SDC rate (NaN != valid number)
-        diff = ff_logits - faulty_logits
-        sdc_rate = (diff != 0).float().mean(dim=1)
-        self.sdc_rates.append(sdc_rate.cpu())
+        # Logit SDC - uses all samples (NaN = 100% changed)
+        self._logit_sdc_rate(faulty_all, faultfree_all)
 
-        # Only compute MSDC and relative change metrics for non-NaN samples
-        if (~nan_mask).any():
-            valid_faulty = faulty_logits[~nan_mask]
-            valid_ff = ff_logits[~nan_mask]
+        # Other metrics - only valid samples
+        if has_valid:
+            faulty = faulty_all[~nan_mask]
+            faultfree = faultfree_all[~nan_mask]
 
-            valid_diff = valid_ff - valid_faulty
-            sdc_magnitude = valid_diff.abs().mean(dim=1)
-            self.sdc_magnitudes.append(sdc_magnitude.cpu())
-
-            relative_change = valid_diff.abs().mean(dim=1) / valid_ff.abs().mean(dim=1)
-
-            sdc_1 = (relative_change >= 0.01).float()
-            sdc_5 = (relative_change >= 0.05).float()
-            sdc_10 = (relative_change >= 0.10).float()
-            sdc_15 = (relative_change >= 0.15).float()
-            sdc_20 = (relative_change >= 0.20).float()
-            sdc_25 = (relative_change >= 0.25).float()
-            sdc_50 = (relative_change >= 0.50).float()
-
-            self.sdc_1_levels.append(sdc_1.cpu())
-            self.sdc_5_levels.append(sdc_5.cpu())
-            self.sdc_10_levels.append(sdc_10.cpu())
-            self.sdc_15_levels.append(sdc_15.cpu())
-            self.sdc_20_levels.append(sdc_20.cpu())
-            self.sdc_25_levels.append(sdc_25.cpu())
-            self.sdc_50_levels.append(sdc_50.cpu())
-
-        # Critical SDC: Check if fault-free prediction's logit changed AND label changed
-        # Only compute for non-NaN samples
-        if (~nan_mask).any():
-            # Work with valid samples only
-            valid_faulty = faulty_logits[~nan_mask]
-            valid_ff = ff_logits[~nan_mask]
-            valid_diff = diff[~nan_mask]
-
-            # For top-1: Did the FF top-1 class's logit change AND did top-1 prediction change?
-            pred_faulty = valid_faulty.argmax(dim=1)
-            pred_ff = valid_ff.argmax(dim=1)
-            pred_changed = pred_faulty != pred_ff
-
-            # Get the fault-free top-1 prediction for each sample
-            # Check if that specific class's logit changed
-            batch_indices = torch.arange(
-                valid_faulty.size(0), device=valid_faulty.device
+            self._sdc_magnitude(faulty, faultfree)
+            self._relative_sdc(faulty, faultfree)
+            self.critical_top1_sdc_rates.append(
+                self._critical_top1_sdc(faulty, faultfree)
             )
-            ff_top1_logit_faulty = valid_faulty[batch_indices, pred_ff]
-            ff_top1_logit_ff = valid_ff[batch_indices, pred_ff]
-            ff_top1_logit_changed = ff_top1_logit_faulty != ff_top1_logit_ff
-
-            # Critical top-1: FF top-1 class's logit changed AND prediction changed
-            critical_top1 = (ff_top1_logit_changed & pred_changed).float().mean()
-            self.critical_top1_sdc_rates.append(critical_top1.item())
-
-            # For top-5: Did ANY of the FF top-5 classes' logits change AND did top-5 set change?
-            top5_faulty = valid_faulty.topk(5, dim=1)[1]
-            top5_ff = valid_ff.topk(5, dim=1)[1]
-
-            # Check if top-5 set changed
-            top5_changed = torch.zeros(
-                len(top5_faulty), dtype=torch.bool, device=valid_faulty.device
+            self.critical_top5_sdc_rates.append(
+                self._critical_top5_sdc(faulty, faultfree)
             )
-            for i in range(len(top5_faulty)):
-                set_ff = set(top5_ff[i].tolist())
-                set_faulty = set(top5_faulty[i].tolist())
-                top5_changed[i] = set_ff != set_faulty
 
-            # Check if ANY of the FF top-5 classes' logits changed
-            ff_top5_logits_changed = torch.zeros(
-                valid_faulty.size(0), dtype=torch.bool, device=valid_faulty.device
-            )
-            for i in range(valid_faulty.size(0)):
-                for class_idx in top5_ff[i]:
-                    if valid_faulty[i, class_idx] != valid_ff[i, class_idx]:
-                        ff_top5_logits_changed[i] = True
-                        break
-
-            # Critical top-5: At least one FF top-5 class's logit changed AND top-5 set changed
-            critical_top5 = (ff_top5_logits_changed & top5_changed).float().mean()
-            self.critical_top5_sdc_rates.append(critical_top5.item())
-
-        # Handle samples with all-NaN logits separately
+        # NaN = catastrophic failure = 100% critical
         if nan_mask.any():
-            num_nan_samples = nan_mask.sum().item()
-            total_samples = nan_mask.size(0)
-
-            # If we had some valid samples, we need to account for NaN samples
-            # NaN logits = catastrophic failure = 100% critical corruption for those samples
-            if (~nan_mask).any():
-                # We already computed critical SDC for valid samples
-                # Now we need to blend in the NaN samples (which are 100% critical)
-                num_valid = (~nan_mask).sum().item()
-
-                # Last appended values were for valid samples only
-                # Adjust them to account for NaN samples being 100% critical
-                last_top1 = self.critical_top1_sdc_rates[-1]
-                last_top5 = self.critical_top5_sdc_rates[-1]
-
-                # Weighted average: (valid_rate * num_valid + 1.0 * num_nan) / total
-                adjusted_top1 = (
-                    last_top1 * num_valid + 1.0 * num_nan_samples
-                ) / total_samples
-                adjusted_top5 = (
-                    last_top5 * num_valid + 1.0 * num_nan_samples
-                ) / total_samples
-
-                # Replace the last values with adjusted ones
-                self.critical_top1_sdc_rates[-1] = adjusted_top1
-                self.critical_top5_sdc_rates[-1] = adjusted_top5
-            else:
-                # All samples have NaN logits - catastrophic failure - 100% critical SDC
-                self.critical_top1_sdc_rates.append(1.0)
-                self.critical_top5_sdc_rates.append(1.0)
+            self._nan_adjustment(nan_mask, has_valid)
 
     def get_results(self) -> dict[str, float] | None:
         if self.total_samples == 0:
@@ -208,13 +217,11 @@ class MetricsTracker:
 
         results["logit_sdc_rate"] = 100 * torch.cat(self.sdc_rates).mean().item()
 
-        # Handle MSDC separately - might be empty even when sdc_rates is not
         if len(self.sdc_magnitudes) > 0:
             results["msdc_avg"] = torch.cat(self.sdc_magnitudes).mean().item()
         else:
             results["msdc_avg"] = float("nan")
 
-        # Critical SDC rates
         if len(self.critical_top1_sdc_rates) > 0:
             results["critical_top1_sdc_rate"] = (
                 100
@@ -230,7 +237,6 @@ class MetricsTracker:
             results["critical_top1_sdc_rate"] = 0.0
             results["critical_top5_sdc_rate"] = 0.0
 
-        # Handle threshold-based SDC percentages - might also be empty
         if len(self.sdc_1_levels) > 0:
             results["sdc_1pct"] = 100 * torch.cat(self.sdc_1_levels).mean().item()
             results["sdc_5pct"] = 100 * torch.cat(self.sdc_5_levels).mean().item()
@@ -294,6 +300,7 @@ class ModelEvaluator:
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=True,
+            persistent_workers=self.config.num_workers > 0,
         )
 
     @functools.lru_cache(maxsize=None)
@@ -303,6 +310,10 @@ class ModelEvaluator:
         device: torch.device,
         max_batches: int | None,
     ) -> tuple[tuple[torch.Tensor, torch.Tensor], ...]:
+        """
+        Load and cache data batches in memory for repeated evaluation.
+        All batches are stored as float32 for consistency.
+        """
         dataloader = DataLoader(
             self.dataloader.dataset,
             batch_size=batch_size,
@@ -312,7 +323,6 @@ class ModelEvaluator:
         )
         batches = []
         for i, (images, labels) in enumerate(dataloader):
-            # Load to device as float32, we'll handle dtype conversion in the run loop
             images = images.to(device=device, dtype=torch.float32, non_blocking=True)
             labels = labels.to(device=device, non_blocking=True)
             batches.append((images, labels))
@@ -349,7 +359,6 @@ class Runner:
             )
         )
 
-        # Get cached batches (always stored as float32)
         batches = self.evaluator.cached_batches(
             self.config.batch_size, self.config.device, self.config.max_batches
         )
@@ -398,24 +407,4 @@ class Runner:
         return results
 
     def _print_results(self, results: dict[str, float]) -> None:
-        print("\n" + "=" * 50)
-        print(f"RESULTS for {self.config.model_key} ({self.config.model_name})")
-        print("=" * 50)
-        print(f"Samples:        {results['samples']}")
-        print(f"Top-1 Accuracy: {results['top1_acc']:.2f}%")
-        print(f"Top-5 Accuracy: {results['top5_acc']:.2f}%")
-
-        if results.get("logit_sdc_rate", 0.0) > 0:
-            print(f"Logit SDC Rate:       {results['logit_sdc_rate']:.2f}%")
-            print(f"MSDC Average:         {results['msdc_avg']:.6f}")
-            print(f"SDC ≥1%:              {results['sdc_1pct']:.2f}%")
-            print(f"SDC ≥5%:              {results['sdc_5pct']:.2f}%")
-            print(f"SDC ≥10%:             {results['sdc_10pct']:.2f}%")
-            print(f"SDC ≥15%:             {results['sdc_15pct']:.2f}%")
-            print(f"SDC ≥20%:             {results['sdc_20pct']:.2f}%")
-            print(f"SDC ≥25%:             {results['sdc_25pct']:.2f}%")
-            print(f"SDC ≥50%:             {results['sdc_50pct']:.2f}%")
-            print(f"Critical Top-1 SDC:   {results['critical_top1_sdc_rate']:.2f}%")
-            print(f"Critical Top-5 SDC:   {results['critical_top5_sdc_rate']:.2f}%")
-
-        print("=" * 50 + "\n")
+        print_run_results(results, self.config.model_key, self.config.model_name)

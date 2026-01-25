@@ -1,9 +1,11 @@
 import random
 import torch
 import numpy as np
+from src.utils.formatting import format_fault_injection_info
 
 
 def get_num_blocks(model):
+    """Get total number of transformer blocks in the model."""
     if hasattr(model, "blocks"):
         return len(model.blocks)
     elif hasattr(model, "layers"):
@@ -13,6 +15,7 @@ def get_num_blocks(model):
 
 
 def get_block(model, block_idx):
+    """Get a specific transformer block by index, handling different architectures."""
     if hasattr(model, "blocks"):
         return model.blocks[block_idx]  # ViT / BEiT
 
@@ -26,6 +29,7 @@ def get_block(model, block_idx):
 
 
 def parse_bit_range(bit_spec):
+    """Parse bit range specification into (min_bit, max_bit) tuple."""
     if isinstance(bit_spec, int):
         return bit_spec, bit_spec
     elif isinstance(bit_spec, tuple) and len(bit_spec) == 2:
@@ -41,6 +45,10 @@ def parse_bit_range(bit_spec):
 
 
 def flip_random_bit(value: torch.Tensor, bit_range=None):
+    """
+    Flip a random bit in a float32 value's IEEE 754 representation.
+    Returns corrupted value, bit index, and binary representations.
+    """
     if value.dtype != torch.float32:
         value = value.float()
 
@@ -61,95 +69,129 @@ def flip_random_bit(value: torch.Tensor, bit_range=None):
     return corrupted_value, rand_bit, original_bits, corrupted_bits
 
 
-def format_ieee754_bits(bits_str: str) -> str:
-    bits_str = bits_str.replace("-", "").replace("+", "").zfill(32)
-    return (
-        f"Sign  Exponent   Mantissa\n {bits_str[0]}    {bits_str[1:9]}  {bits_str[9:]}"
-    )
+def _select_component_type(component_type):
+    """Select component type, handling 'all' option."""
+    if component_type == "all":
+        return random.choice(["attention", "mlp", "norm", "patch_embed", "classifier"])
+    return component_type
+
+
+def _collect_attention_params(attn, sub_component, block_idx):
+    """Collect attention parameters for fault injection."""
+    attn_params = {
+        "qkv": ["qkv.weight"],
+        "proj": ["proj.weight"],
+    }
+
+    if sub_component is None:
+        sub_component = random.choice(list(attn_params.keys()))
+    elif sub_component not in attn_params:
+        raise ValueError(
+            f"Invalid attention sub_component: {sub_component}. "
+            f"Choose from: {list(attn_params.keys())}"
+        )
+
+    available_params = []
+    for name, param in attn.named_parameters():
+        if name in attn_params[sub_component]:
+            available_params.append((f"Block{block_idx}.attn.{name}", param))
+
+    return available_params, sub_component
+
+
+def _collect_mlp_params(mlp, sub_component, block_idx):
+    """Collect MLP parameters for fault injection."""
+    mlp_params = {
+        "fc1": ["fc1.weight"],
+        "fc2": ["fc2.weight"],
+    }
+
+    if sub_component is None:
+        sub_component = random.choice(list(mlp_params.keys()))
+    elif sub_component not in mlp_params:
+        raise ValueError(
+            f"Invalid MLP sub_component: {sub_component}. "
+            f"Choose from: {list(mlp_params.keys())}"
+        )
+
+    available_params = []
+    for name, param in mlp.named_parameters():
+        if name in mlp_params[sub_component]:
+            available_params.append((f"Block{block_idx}.mlp.{name}", param))
+
+    return available_params, sub_component
+
+
+def _collect_norm_params(block, block_idx):
+    """Collect normalization layer parameters."""
+    available_params = []
+    for name, param in block.norm1.named_parameters():
+        available_params.append((f"Block{block_idx}.norm1.{name}", param))
+    for name, param in block.norm2.named_parameters():
+        available_params.append((f"Block{block_idx}.norm2.{name}", param))
+    return available_params
+
+
+def _collect_patch_embed_params(model):
+    """Collect patch embedding parameters."""
+    available_params = []
+    for name, param in model.patch_embed.named_parameters():
+        available_params.append((f"patch_embed.{name}", param))
+    return available_params
+
+
+def _collect_classifier_params(model):
+    """Collect classifier head parameters."""
+    available_params = []
+    if hasattr(model, "norm") and model.norm is not None:
+        for name, param in model.norm.named_parameters():
+            available_params.append((f"norm.{name}", param))
+    if hasattr(model, "head") and model.head is not None:
+        for name, param in model.head.named_parameters():
+            available_params.append((f"head.{name}", param))
+    return available_params
 
 
 def inject_fault(
     model,
     component_type="attention",
-    sub_component=None,  # NEW: Specify qkv, proj, fc1, fc2, etc.
+    sub_component=None,
     block_idx=None,
     idx=None,
     bit_range=None,
     verbose=True,
 ):
-    available_params = []
+    """
+    Inject a single-bit fault into a random weight of the specified component.
 
+    Supports targeting specific components (attention, mlp, norm, patch_embed, classifier)
+    and sub-components (qkv/proj for attention, fc1/fc2 for mlp).
+    """
     total_blocks = get_num_blocks(model)
 
     if block_idx is None:
         block_idx = random.randint(0, total_blocks - 1)
 
     block = get_block(model, block_idx)
+    component_type = _select_component_type(component_type)
 
-    if component_type == "all":
-        component_type = random.choice(
-            ["attention", "mlp", "norm", "patch_embed", "classifier"]
-        )
-
+    # Collect parameters based on component type
     if component_type == "attention":
-        attn = block.attn
-
-        attn_params = {
-            "qkv": ["qkv.weight"],
-            "proj": ["proj.weight"],
-        }
-
-        if sub_component is None:
-            sub_component = random.choice(list(attn_params.keys()))
-        elif sub_component not in attn_params:
-            raise ValueError(
-                f"Invalid attention sub_component: {sub_component}. "
-                f"Choose from: {list(attn_params.keys())}"
-            )
-
-        for name, param in attn.named_parameters():
-            if name in attn_params[sub_component]:
-                available_params.append((f"Block{block_idx}.attn.{name}", param))
-
+        available_params, sub_component = _collect_attention_params(
+            block.attn, sub_component, block_idx
+        )
     elif component_type == "mlp":
-        mlp = block.mlp
-
-        mlp_params = {
-            "fc1": ["fc1.weight"],
-            "fc2": ["fc2.weight"],
-        }
-
-        # Choose sub-component
-        if sub_component is None:
-            sub_component = random.choice(list(mlp_params.keys()))
-        elif sub_component not in mlp_params:
-            raise ValueError(
-                f"Invalid MLP sub_component: {sub_component}. "
-                f"Choose from: {list(mlp_params.keys())}"
-            )
-
-        # Collect parameters for chosen sub-component
-        for name, param in mlp.named_parameters():
-            if name in mlp_params[sub_component]:
-                available_params.append((f"Block{block_idx}.mlp.{name}", param))
-
+        available_params, sub_component = _collect_mlp_params(
+            block.mlp, sub_component, block_idx
+        )
     elif component_type == "norm":
-        for name, param in block.norm1.named_parameters():
-            available_params.append((f"Block{block_idx}.norm1.{name}", param))
-        for name, param in block.norm2.named_parameters():
-            available_params.append((f"Block{block_idx}.norm2.{name}", param))
-
+        available_params = _collect_norm_params(block, block_idx)
     elif component_type == "patch_embed":
-        for name, param in model.patch_embed.named_parameters():
-            available_params.append((f"patch_embed.{name}", param))
-
+        available_params = _collect_patch_embed_params(model)
     elif component_type == "classifier":
-        if hasattr(model, "norm") and model.norm is not None:
-            for name, param in model.norm.named_parameters():
-                available_params.append((f"norm.{name}", param))
-        if hasattr(model, "head") and model.head is not None:
-            for name, param in model.head.named_parameters():
-                available_params.append((f"head.{name}", param))
+        available_params = _collect_classifier_params(model)
+    else:
+        raise ValueError(f"Unknown component_type: {component_type}")
 
     if not available_params:
         raise ValueError(
@@ -157,6 +199,7 @@ def inject_fault(
             f"sub_component: {sub_component}"
         )
 
+    # Select random parameter and inject fault
     param_full_name, param = random.choice(available_params)
     if idx is None:
         idx = tuple(random.randint(0, s - 1) for s in param.shape)
@@ -186,24 +229,6 @@ def inject_fault(
     }
 
     if verbose:
-        sub_comp_str = f"\nSub-Component  : {sub_component}" if sub_component else ""
-        print(f"""
-Fault Injection Details
-{"-" * 80}
-Component Type : {component_type}{sub_comp_str}
-Block Index    : {block_idx}
-Parameter Name : {param_full_name}
-Fault Index    : {idx}
-Bit Flipped    : {bit_flipped}
-Original Value : {original_value.item():.8f}
-Corrupted Value: {corrupted_value.item():.8f}
-
-Original Bits:
-{format_ieee754_bits(original_bits)}
-
-Corrupted Bits:
-{format_ieee754_bits(corrupted_bits)}
-{"-" * 80}
-""")
+        print(format_fault_injection_info(fault_info))
 
     return fault_info

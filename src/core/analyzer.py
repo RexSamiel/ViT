@@ -2,7 +2,9 @@ import math
 
 
 class RunAnalyzer:
-    def __init__(self, msdc_threshold: float = 1e6):
+    """Aggregates results from multiple fault injection runs."""
+
+    def __init__(self):
         self.n_runs = 0
 
         # Accuracy metrics
@@ -16,7 +18,7 @@ class RunAnalyzer:
         # Logit SDC metrics
         self.avg_logit_sdc = 0.0
 
-        # SDC threshold metrics with counters
+        # Relative SDC threshold metrics
         self.avg_sdc_1pct = 0.0
         self.sdc_1pct_counted = 0
         self.avg_sdc_5pct = 0.0
@@ -32,12 +34,10 @@ class RunAnalyzer:
         self.avg_sdc_50pct = 0.0
         self.sdc_50pct_counted = 0
 
-        # MSDC metrics
+        # MSDC metrics (raw values, no threshold filtering)
         self.avg_msdc = 0.0
         self.worst_msdc = 0.0
         self.msdc_counted = 0
-        self.msdc_skipped = 0
-        self.msdc_threshold = msdc_threshold
 
         # Critical SDC metrics
         self.avg_critical_top1_sdc = 0.0
@@ -125,12 +125,10 @@ class RunAnalyzer:
                 self.avg_sdc_50pct * (self.sdc_50pct_counted - 1) + sdc_50pct
             ) / self.sdc_50pct_counted
 
-        # MSDC Metrics
+        # MSDC Metrics (raw values, only skip if invalid)
         msdc = run_result.get("msdc_avg", None)
 
-        if msdc is None or math.isnan(msdc) or msdc > self.msdc_threshold:
-            self.msdc_skipped += 1
-        else:
+        if msdc is not None and not math.isnan(msdc):
             self.msdc_counted += 1
             self.avg_msdc = (
                 self.avg_msdc * (self.msdc_counted - 1) + msdc
@@ -180,7 +178,6 @@ class RunAnalyzer:
             "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
             "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
             "msdc_counted_runs": self.msdc_counted,
-            "msdc_skipped_runs": self.msdc_skipped,
             # Critical SDC metrics
             "avg_critical_top1_sdc": self.avg_critical_top1_sdc,
             "avg_critical_top5_sdc": self.avg_critical_top5_sdc,
@@ -242,10 +239,8 @@ class RunAnalyzer:
                 f"  Average MSDC:                 {self.avg_msdc:.6f}\n"
                 f"  Worst MSDC:                   {self.worst_msdc:.6f}\n"
             )
-            if self.msdc_skipped > 0:
-                output += f"  Runs skipped for MSDC:        {self.msdc_skipped}\n"
         else:
-            output += "\nMSDC Metrics:\n  No valid MSDC values (all runs skipped)\n"
+            output += "\nMSDC Metrics:\n  No valid MSDC values\n"
 
         output += (
             "\nCritical SDC Metrics:\n"
