@@ -1,7 +1,27 @@
 import random
 import torch
-import numpy as np
-from src.utils.formatting import format_fault_injection_info
+
+
+def format_fault_info(info: dict) -> str:
+    """Format fault injection info for printing."""
+    lines = [
+        "=" * 60,
+        "FAULT INJECTION",
+        "=" * 60,
+        f"Component:      {info['component_type']}",
+    ]
+    if info.get("sub_component"):
+        lines.append(f"Sub-component:  {info['sub_component']}")
+    lines.extend([
+        f"Block:          {info['block_idx']}",
+        f"Parameter:      {info['param_name']}",
+        f"Index:          {info['fault_idx']}",
+        f"Bit flipped:    {info['bit_flipped']}",
+        f"Original:       {info['original_value']:.6e}",
+        f"Corrupted:      {info['corrupted_value']:.6e}",
+        "=" * 60,
+    ])
+    return "\n".join(lines)
 
 
 def get_num_blocks(model):
@@ -229,6 +249,6 @@ def inject_fault(
     }
 
     if verbose:
-        print(format_fault_injection_info(fault_info))
+        print(format_fault_info(fault_info))
 
     return fault_info

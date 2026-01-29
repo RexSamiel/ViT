@@ -1,11 +1,31 @@
-# Ignored files
-
-ignore/
-run.sh
+# Python
 __pycache__/
-.venv
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Project specific
+logits/
+results/
 logs/
 *.pt
-cache*
-results_*
-.claude
+run.sh
+.old/
+
+# Claude
+.claude/
+
+# Cache
+cache*/
+.cache/
