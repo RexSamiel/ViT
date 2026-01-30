@@ -17,7 +17,7 @@ venv/
 
 # Project specific
 logits/
-results/
+results/new_runs
 logs/
 *.pt
 run.sh

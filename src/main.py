@@ -30,9 +30,10 @@ def align_batch_sizes(faulty: torch.Tensor, faultfree: torch.Tensor) -> tuple:
 class RunManager:
     """Manages single and multi-run fault injection experiments."""
 
-    def __init__(self, config: Config, verbose: bool = True):
+    def __init__(self, config: Config, verbose: bool = True, show_info: bool = True):
         self.config = config
         self.verbose = verbose
+        self.show_info = show_info  # Controls per-run output in multi-run mode
         self.evaluator = ModelEvaluator(config, verbose)
 
         # Store original model state for reset between runs
@@ -65,10 +66,15 @@ class RunManager:
         mode: str = "faultfree",
         save_logits: bool = False,
         fault_params: dict = None,
+        show_results: bool = None,
     ) -> dict:
         """Execute a single evaluation run."""
         self.accuracy.reset()
         self.sdc.reset()
+
+        # Determine whether to show results (default to verbose if not specified)
+        if show_results is None:
+            show_results = self.verbose
 
         # Inject fault if in faulty mode
         fault_info = None
@@ -80,7 +86,7 @@ class RunManager:
                 idx=fault_params.get("idx"),
                 block_idx=fault_params.get("block_idx"),
                 bit_range=fault_params.get("bit_range"),
-                verbose=self.verbose,
+                verbose=show_results,
             )
 
         # Run evaluation
@@ -131,7 +137,7 @@ class RunManager:
             "mode": mode,
         }
 
-        if self.verbose:
+        if show_results:
             self._print_run_results(results, runtime)
 
         return results
@@ -145,13 +151,17 @@ class RunManager:
         total_start = time.perf_counter()
 
         for i in range(n_runs):
-            if self.verbose:
+            if self.verbose and self.show_info:
                 print(f"\n{'=' * 60}")
                 print(f" Run {i + 1}/{n_runs}")
                 print(f"{'=' * 60}")
 
             self.reset()
-            results = self.run_single(mode="faulty", fault_params=fault_params)
+            results = self.run_single(
+                mode="faulty",
+                fault_params=fault_params,
+                show_results=self.show_info,
+            )
 
             # Aggregate results
             self.accuracy.aggregate(results)
@@ -280,6 +290,8 @@ def parse_args():
                         help="Metrics mode: fi/fault_injection for fault injection, aa/activation_analyzer for activation analysis")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--verbose", type=str, default="true")
+    parser.add_argument("--info", type=str, default="false",
+                        help="Show per-run info in multi-run mode (default: false)")
     parser.add_argument("--save_logits", type=str, default="false")
     parser.add_argument("--idx", type=int, default=None)
     parser.add_argument("--block_idx", type=int, default=None)
@@ -424,7 +436,7 @@ def save_activation_results(args, results: dict, config: Config) -> None:
     print(f"\nActivation results saved to: {path}")
 
 
-def run_fault_injection(args, config: Config, verbose: bool) -> None:
+def run_fault_injection(args, config: Config, verbose: bool, show_info: bool) -> None:
     """Run fault injection mode."""
     save_logits = str_to_bool(args.save_logits)
 
@@ -438,7 +450,7 @@ def run_fault_injection(args, config: Config, verbose: bool) -> None:
     }
 
     # Create manager and run
-    manager = RunManager(config, verbose=verbose)
+    manager = RunManager(config, verbose=verbose, show_info=show_info)
 
     # Load base accuracy for faulty runs
     base_accuracy = None
@@ -495,12 +507,13 @@ def main():
         config.max_batches = args.max_batches
 
     verbose = str_to_bool(args.verbose)
+    show_info = str_to_bool(args.info)
 
     # Route based on metrics mode
     if args.metrics in ("aa", "activation_analyzer"):
         run_activation_analysis(args, config, verbose)
     else:
-        run_fault_injection(args, config, verbose)
+        run_fault_injection(args, config, verbose, show_info)
 
 
 if __name__ == "__main__":
