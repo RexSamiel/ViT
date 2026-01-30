@@ -191,6 +191,10 @@ def inject_fault(
 
     if block_idx is None:
         block_idx = random.randint(0, total_blocks - 1)
+    elif block_idx >= total_blocks:
+        raise ValueError(
+            f"block_idx {block_idx} out of range (model has {total_blocks} blocks, indices 0-{total_blocks - 1})"
+        )
 
     block = get_block(model, block_idx)
     component_type = _select_component_type(component_type)
@@ -239,10 +243,12 @@ def inject_fault(
         else None,
         "block_idx": block_idx,
         "param_name": param_full_name,
+        "param_ref": param,  # Reference to parameter tensor for fast reset
         "fault_idx": idx,
         "bit_range": bit_range,
         "bit_flipped": bit_flipped,
         "original_value": original_value.item(),
+        "original_tensor": original_value,  # Keep tensor for fast reset
         "corrupted_value": corrupted_value.item(),
         "original_bits": original_bits,
         "corrupted_bits": corrupted_bits,

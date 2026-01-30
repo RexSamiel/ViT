@@ -9,6 +9,8 @@ class FaultFreeLogits:
         self.logits_dir = LOGITS_DIR
         self.filename = self.logits_dir / f"ff_logits_{model_key}.pt"
         self.data = None
+        self._gpu_cache = None  # Cache logits on GPU to avoid repeated transfers
+        self._cached_device = None
         self.load()
 
     def load(self):
@@ -26,6 +28,12 @@ class FaultFreeLogits:
         )
         print(f"✓ Fault-free logits saved to {self.filename}")
 
+    def _ensure_gpu_cache(self, device):
+        """Load logits to GPU once and cache them."""
+        if self._gpu_cache is None or self._cached_device != device:
+            self._gpu_cache = self.data["logits"].to(device)
+            self._cached_device = device
+
     def get_batch(self, batch_idx, batch_size, actual_size, device):
         if self.data is None:
             raise RuntimeError(
@@ -33,9 +41,12 @@ class FaultFreeLogits:
                 "Run: python script.py --model <model> --faultfree --logits"
             )
 
+        # Use GPU-cached logits to avoid repeated CPU->GPU transfers
+        self._ensure_gpu_cache(device)
+
         start = batch_idx * batch_size
         end = start + actual_size
-        return self.data["logits"][start:end].to(device)
+        return self._gpu_cache[start:end]
 
     @property
     def available(self):

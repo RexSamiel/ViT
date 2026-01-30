@@ -12,7 +12,10 @@ class Config:
     num_workers: int = field(default_factory=lambda: min(4, os.cpu_count() or 2))
     use_amp: bool = True
     max_batches: int | None = 1
+    _device: torch.device = field(default=None, init=False, repr=False)
 
     @property
     def device(self) -> torch.device:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self._device is None:
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return self._device

@@ -67,17 +67,36 @@ class ActivationAnalyzer:
         self._seen_storages: set = set()  # For deduplication within a batch
 
     def _reservoir_sample(self, new_values: np.ndarray, component: str) -> None:
+        """Vectorized reservoir sampling for efficiency."""
         samples = self._samples[component]
         count = self._counts[component]
+        n_new = len(new_values)
 
-        for val in new_values:
-            count += 1
-            if len(samples) < self.sample_size:
-                samples.append(float(val))
-            else:
-                j = self._rng.integers(0, count)
-                if j < self.sample_size:
-                    samples[j] = float(val)
+        if n_new == 0:
+            return
+
+        # Phase 1: Fill up to sample_size
+        if len(samples) < self.sample_size:
+            space_left = self.sample_size - len(samples)
+            to_add = min(space_left, n_new)
+            samples.extend(new_values[:to_add].tolist())
+            count += to_add
+            new_values = new_values[to_add:]
+            n_new = len(new_values)
+
+        # Phase 2: Reservoir sampling for remaining values (vectorized)
+        if n_new > 0:
+            # Generate all random indices at once
+            indices = self._rng.integers(count + 1, count + n_new + 1, size=n_new)
+            # Find which values should replace existing samples
+            mask = indices < self.sample_size
+            replace_indices = indices[mask]
+            replace_values = new_values[mask]
+            # Apply replacements
+            for idx, val in zip(replace_indices, replace_values):
+                samples[idx] = float(val)
+            count += n_new
+
         self._counts[component] = count
 
     def _extract_block_idx(self, name: str) -> int | None:
@@ -178,9 +197,9 @@ class ActivationAnalyzer:
         component: str,
         block_idx: int | None,
     ) -> None:
-        values = tensor.detach().float()
-        val_min = values.min().item()
-        val_max = values.max().item()
+        # Compute min/max on GPU (fast, only transfers 2 scalars)
+        val_min = tensor.min().item()
+        val_max = tensor.max().item()
 
         # Check for duplicate tensor (same storage = same data)
         is_duplicate = False
@@ -246,11 +265,19 @@ class ActivationAnalyzer:
                 self.block_aggregated[block_idx][component]["last_layer_idx"], idx
             )
 
-        flat = values.flatten().cpu().numpy()
-        if len(flat) > 10000:
-            indices = self._rng.choice(len(flat), 10000, replace=False)
+        # Sample ON GPU first, then transfer only the sample (much faster!)
+        flat = tensor.detach().flatten()
+        num_elements = flat.numel()
+        sample_size = min(10000, num_elements)
+
+        if num_elements > sample_size:
+            # Random sampling on GPU using randint (faster than randperm for large tensors)
+            indices = torch.randint(0, num_elements, (sample_size,), device=flat.device)
             flat = flat[indices]
-        self._reservoir_sample(flat, component)
+
+        # Only transfer the small sample to CPU (non_blocking for async transfer)
+        flat_np = flat.float().cpu().numpy()
+        self._reservoir_sample(flat_np, component)
 
     def register_hooks(self, model: nn.Module) -> int:
         """Register forward hooks on all modules found by iterating recursively."""

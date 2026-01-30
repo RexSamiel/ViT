@@ -29,11 +29,23 @@ class ModelEvaluator:
         if self.verbose:
             print(f"Loading model: {self.config.model_name}")
 
+        # Enable cuDNN autotuning for fixed input sizes (faster convolutions)
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+
         model = timm.create_model(
             self.config.model_name,
             pretrained=True
         ).to(self.config.device)
         model.eval()
+
+        # Warm-up pass to compile CUDA kernels
+        if self.config.device.type == "cuda":
+            dummy = torch.randn(1, 3, 224, 224, device=self.config.device)
+            with torch.inference_mode():
+                _ = model(dummy)
+            del dummy
+            torch.cuda.empty_cache()
 
         if self.verbose:
             print(f"Model loaded on {self.config.device}")
@@ -105,13 +117,13 @@ class ModelEvaluator:
         """Get cached batches for evaluation."""
         return self.cached_batches(
             self.config.batch_size,
-            self.config.device,
+            self.device,  # Use stored device, not property (avoids new object creation)
             self.config.max_batches,
         )
 
     def inference(self, images: torch.Tensor, use_amp: bool = True) -> torch.Tensor:
         """Run inference on a batch of images."""
-        with torch.no_grad():
+        with torch.inference_mode():
             with torch.autocast(
                 device_type=self.config.device.type,
                 enabled=use_amp and self.config.device.type == "cuda"

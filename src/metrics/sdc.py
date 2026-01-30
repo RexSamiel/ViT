@@ -282,9 +282,11 @@ class SDCMetrics:
         self.worst_msdc = 0.0
         self.msdc_counted = 0
 
-        # Critical SDC
+        # Critical SDC (with Welford's online variance)
         self.avg_critical_top1 = 0.0
         self.avg_critical_top5 = 0.0
+        self.m2_critical_top1 = 0.0
+        self.m2_critical_top5 = 0.0
 
         # Risk categories
         self.high_risk = 0
@@ -332,15 +334,21 @@ class SDCMetrics:
             ) / self.msdc_counted
             self.worst_msdc = max(self.worst_msdc, msdc)
 
-        # Critical SDC
+        # Critical SDC (Welford's online algorithm for mean and variance)
         crit_top1 = run_results.get("critical_top1_sdc_rate", 0.0)
         crit_top5 = run_results.get("critical_top5_sdc_rate", 0.0)
-        self.avg_critical_top1 = (
-            self.avg_critical_top1 * (self.n_runs - 1) + crit_top1
-        ) / self.n_runs
-        self.avg_critical_top5 = (
-            self.avg_critical_top5 * (self.n_runs - 1) + crit_top5
-        ) / self.n_runs
+
+        delta_top1 = crit_top1 - self.avg_critical_top1
+        delta_top5 = crit_top5 - self.avg_critical_top5
+
+        self.avg_critical_top1 += delta_top1 / self.n_runs
+        self.avg_critical_top5 += delta_top5 / self.n_runs
+
+        delta2_top1 = crit_top1 - self.avg_critical_top1
+        delta2_top5 = crit_top5 - self.avg_critical_top5
+
+        self.m2_critical_top1 += delta_top1 * delta2_top1
+        self.m2_critical_top5 += delta_top5 * delta2_top5
 
         # Risk categories
         if crit_top1 > 0.0:
@@ -354,6 +362,12 @@ class SDCMetrics:
         self.total_batches_all_nan += run_results.get("batches_all_nan", 0)
         self.total_batches_partial_nan += run_results.get("batches_partial_nan", 0)
         self.total_batches_all += run_results.get("total_batches", 0)
+
+    def _std(self, m2: float) -> float:
+        """Compute standard deviation from M2 (Welford's algorithm)."""
+        if self.n_runs < 2:
+            return 0.0
+        return (m2 / (self.n_runs - 1)) ** 0.5
 
     def get_summary(self) -> dict:
         """Return aggregated SDC summary."""
@@ -371,7 +385,9 @@ class SDCMetrics:
             "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
             "msdc_counted_runs": self.msdc_counted,
             "avg_critical_top1_sdc": self.avg_critical_top1,
+            "std_critical_top1_sdc": self._std(self.m2_critical_top1),
             "avg_critical_top5_sdc": self.avg_critical_top5,
+            "std_critical_top5_sdc": self._std(self.m2_critical_top5),
             "high_risk_count": self.high_risk,
             "high_risk_pct": 100 * self.high_risk / self.n_runs if self.n_runs else 0.0,
             "medium_risk_count": self.medium_risk,
@@ -404,9 +420,12 @@ class SDCMetrics:
         else:
             print("\nMSDC Metrics: No valid values")
 
+        std_top1 = self._std(self.m2_critical_top1)
+        std_top5 = self._std(self.m2_critical_top5)
+
         print("\nCritical SDC Metrics:")
-        print(f"  Average Critical Top-1 SDC:   {self.avg_critical_top1:.2f}%")
-        print(f"  Average Critical Top-5 SDC:   {self.avg_critical_top5:.2f}%")
+        print(f"  Average Critical Top-1 SDC:   {self.avg_critical_top1:.2f}% ± {std_top1:.2f}%")
+        print(f"  Average Critical Top-5 SDC:   {self.avg_critical_top5:.2f}% ± {std_top5:.2f}%")
 
         high_pct = 100 * self.high_risk / self.n_runs if self.n_runs else 0.0
         med_pct = 100 * self.medium_risk / self.n_runs if self.n_runs else 0.0

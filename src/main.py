@@ -2,14 +2,23 @@ import argparse
 import datetime
 import json
 import os
+import random
 import time
 import torch
 
 from src.config.settings import Config
 from src.core.model import ModelEvaluator
 from src.metrics import AccuracyMetrics, SDCMetrics, ActivationAnalyzer
-from src.fault_injector.fault_injection import inject_fault
+from src.fault_injector.fault_injection import inject_fault, get_num_blocks
 from src.utils.helper import SUPPORTED_MODELS, print_supported_models
+
+
+def set_seed(seed: int) -> None:
+    """Set random seed for reproducibility."""
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def prepare_labels(outputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -36,10 +45,8 @@ class RunManager:
         self.show_info = show_info  # Controls per-run output in multi-run mode
         self.evaluator = ModelEvaluator(config, verbose)
 
-        # Store original model state for reset between runs
-        self.original_state = {
-            k: v.clone() for k, v in self.evaluator.model.state_dict().items()
-        }
+        # Track last fault for efficient reset (only restore corrupted parameter)
+        self.last_fault_info = None
 
         # Metrics
         self.accuracy = AccuracyMetrics()
@@ -55,11 +62,19 @@ class RunManager:
 
     def reset(self) -> None:
         """Reset model and metrics for a new run."""
-        self.evaluator.model.load_state_dict(self.original_state)
-        self.evaluator.clear_cache()
+        # Only restore the corrupted parameter (much faster than full state_dict)
+        if self.last_fault_info is not None:
+            info = self.last_fault_info
+            param = info["param_ref"]
+            idx = info["fault_idx"]
+            original = info["original_tensor"]
+            with torch.no_grad():
+                param[idx] = original
+            self.last_fault_info = None
+
+        # Note: Do NOT clear batch cache here - batches should persist between runs
         self.accuracy.reset()
         self.sdc.reset()
-        torch.cuda.empty_cache()
 
     def run_single(
         self,
@@ -88,6 +103,8 @@ class RunManager:
                 bit_range=fault_params.get("bit_range"),
                 verbose=show_results,
             )
+            # Store for efficient reset (only restore this parameter)
+            self.last_fault_info = fault_info
 
         # Run evaluation
         batches = self.evaluator.get_batches()
@@ -96,7 +113,7 @@ class RunManager:
 
         start_time = time.perf_counter()
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch_idx, (images, labels) in enumerate(batches):
                 outputs = self.evaluator.inference(images, self.use_amp)
 
@@ -238,10 +255,9 @@ class ActivationRunManager:
 
         start_time = time.perf_counter()
 
-        with torch.no_grad():
-            for batch_idx, (images, labels) in enumerate(batches):
-                images = images.to(self.config.device)
-
+        with torch.inference_mode():
+            for batch_idx, (images, _) in enumerate(batches):
+                # Images already on device from cached_batches
                 # Run inference - hooks capture activations automatically
                 _ = self.evaluator.inference(images, self.use_amp)
 
@@ -303,6 +319,8 @@ def parse_args():
                         help="Batch size (int or 'None' to use full batches)")
     parser.add_argument("--max_batches", type=str, default=None,
                         help="Max batches (int or 'None' for all batches)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Random seed for reproducibility (default: random)")
     return parser.parse_args()
 
 
@@ -365,7 +383,14 @@ def save_base_accuracy(model_key: str, results: dict) -> None:
     print(f"Base accuracy saved to: {path}")
 
 
-def save_summary(args, summary: dict, config: Config, base_accuracy: dict = None) -> None:
+def save_summary(
+    args,
+    summary: dict,
+    config: Config,
+    base_accuracy: dict = None,
+    seed: int = None,
+    total_blocks: int = None,
+) -> None:
     """Save experiment summary to JSON."""
     # Save to new_runs folder with descriptive filename
     os.makedirs("results/new_runs", exist_ok=True)
@@ -390,6 +415,7 @@ def save_summary(args, summary: dict, config: Config, base_accuracy: dict = None
     summary["timestamp"] = datetime.datetime.now().isoformat()
     summary["config"] = {
         "model": args.model,
+        "model_name": config.model_name,
         "mode": args.mode,
         "repeat": args.repeat,
         "samples_per_run": samples_per_run,
@@ -397,7 +423,21 @@ def save_summary(args, summary: dict, config: Config, base_accuracy: dict = None
         "max_batches": config.max_batches,
         "component": args.component,
         "sub_component": args.sub_component,
+        "block_idx": args.block_idx,
+        "idx": args.idx,
         "bit_range": parse_bit_range(args.bit_range),
+        "total_blocks": total_blocks,
+    }
+
+    # Reproducibility info
+    summary["reproducibility"] = {
+        "seed": seed,
+        "pytorch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+        "device": str(config.device),
+        "cudnn_version": torch.backends.cudnn.version() if torch.cuda.is_available() else None,
+        "cudnn_benchmark": torch.backends.cudnn.benchmark,
     }
 
     # Include base accuracy if available
@@ -445,7 +485,7 @@ def save_activation_results(args, results: dict, config: Config) -> None:
     print(f"\nActivation results saved to: {path}")
 
 
-def run_fault_injection(args, config: Config, verbose: bool, show_info: bool) -> None:
+def run_fault_injection(args, config: Config, verbose: bool, show_info: bool, seed: int) -> None:
     """Run fault injection mode."""
     save_logits = str_to_bool(args.save_logits)
 
@@ -460,6 +500,9 @@ def run_fault_injection(args, config: Config, verbose: bool, show_info: bool) ->
 
     # Create manager and run
     manager = RunManager(config, verbose=verbose, show_info=show_info)
+
+    # Get total blocks for metadata
+    total_blocks = get_num_blocks(manager.evaluator.model)
 
     # Load base accuracy for faulty runs
     base_accuracy = None
@@ -479,7 +522,7 @@ def run_fault_injection(args, config: Config, verbose: bool, show_info: bool) ->
             save_base_accuracy(args.model, results)
     else:
         summary = manager.run_multiple(args.repeat, fault_params)
-        save_summary(args, summary, config, base_accuracy)
+        save_summary(args, summary, config, base_accuracy, seed=seed, total_blocks=total_blocks)
 
 
 def run_activation_analysis(args, config: Config, verbose: bool) -> None:
@@ -518,11 +561,17 @@ def main():
     verbose = str_to_bool(args.verbose)
     show_info = str_to_bool(args.info)
 
+    # Set random seed for reproducibility
+    seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
+    set_seed(seed)
+    if verbose:
+        print(f"Random seed: {seed}")
+
     # Route based on metrics mode
     if args.metrics in ("aa", "activation_analyzer"):
         run_activation_analysis(args, config, verbose)
     else:
-        run_fault_injection(args, config, verbose, show_info)
+        run_fault_injection(args, config, verbose, show_info, seed)
 
 
 if __name__ == "__main__":
