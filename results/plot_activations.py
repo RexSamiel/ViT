@@ -67,6 +67,7 @@ class CombinedActivationPlot:
         self.show_block = True
         self.show_mha = True
         self.show_mlp = True
+        self.show_combined_all = False  # Show combined distribution of all components
         self.use_log_scale = True
         self.show_legend = True
         self.view_mode = "ranges"  # "ranges" or "distributions"
@@ -94,7 +95,7 @@ class CombinedActivationPlot:
         self.view_ax = plt.subplot2grid((26, 28), (0, 21), colspan=7, rowspan=3)
         self.style_ax = plt.subplot2grid((26, 28), (3, 21), colspan=7, rowspan=3)
         self.model_ax = plt.subplot2grid((26, 28), (7, 21), colspan=7, rowspan=min(len(self.models) + 1, 5))
-        self.component_ax = plt.subplot2grid((26, 28), (13, 21), colspan=7, rowspan=4)
+        self.component_ax = plt.subplot2grid((26, 28), (13, 21), colspan=7, rowspan=5)
         self.options_ax = plt.subplot2grid((26, 28), (18, 21), colspan=7, rowspan=3)
 
         self.setup_controls()
@@ -119,7 +120,7 @@ class CombinedActivationPlot:
         # Component selection
         self.component_ax.set_title("Components", fontsize=10, fontweight="bold")
         self.component_check = CheckButtons(
-            self.component_ax, ["Block", "MHA", "MLP"], [True, True, True]
+            self.component_ax, ["Block", "MHA", "MLP", "Combined All"], [True, True, True, False]
         )
         self.component_check.on_clicked(self.on_component_change)
 
@@ -147,6 +148,8 @@ class CombinedActivationPlot:
             self.show_mha = not self.show_mha
         elif label == "MLP":
             self.show_mlp = not self.show_mlp
+        elif label == "Combined All":
+            self.show_combined_all = not self.show_combined_all
         self.update_plot()
 
     def on_options_change(self, label):
@@ -499,6 +502,8 @@ class CombinedActivationPlot:
     def plot_distributions(self):
         """Plot activation distributions (Fig 3 style) with zoom sliders."""
         components = []
+        if self.show_combined_all:
+            components.append(("combined_all", "COMBINED (All Components)"))
         if self.show_block:
             components.append(("block", "BLOCK"))
         if self.show_mha:
@@ -515,10 +520,10 @@ class CombinedActivationPlot:
         gs = self.main_area.get_subplotspec().subgridspec(len(components), 1, hspace=0.35)
         active_models = [m for m in self.models if self.show_models[m]]
 
-        # Calculate global x range
+        # Calculate global x range (include all components for range calculation)
         all_x_min, all_x_max = float("inf"), float("-inf")
         for model in active_models:
-            for comp, _ in components:
+            for comp in ["block", "mha", "mlp"]:
                 dist_data = self.data[model].get("distributions", {}).get(comp, {})
                 if dist_data.get("bin_centers"):
                     all_x_min = min(all_x_min, min(dist_data["bin_centers"]))
@@ -560,16 +565,26 @@ class CombinedActivationPlot:
                 continue
 
             for model_idx, model in enumerate(active_models):
-                dist_data = self.data[model].get("distributions", {}).get(comp, {})
-                bin_centers = dist_data.get("bin_centers", [])
-                counts = dist_data.get("counts", [])
+                if comp == "combined_all":
+                    # Combine all component distributions for this model
+                    combined_centers, combined_counts = self._combine_distributions(model)
+                    if combined_centers is None:
+                        continue
+                    bin_centers = combined_centers
+                    counts = combined_counts
+                    # Use a distinct color for combined view
+                    color = "#8E44AD"  # Purple for combined
+                else:
+                    dist_data = self.data[model].get("distributions", {}).get(comp, {})
+                    bin_centers = dist_data.get("bin_centers", [])
+                    counts = dist_data.get("counts", [])
 
-                if not bin_centers or not counts:
-                    continue
+                    if not bin_centers or not counts:
+                        continue
 
-                color = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])[comp]
-                bin_centers = np.array(bin_centers)
-                counts = np.array(counts)
+                    color = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])[comp]
+                    bin_centers = np.array(bin_centers)
+                    counts = np.array(counts)
 
                 label = model if self.show_legend else None
                 ax.fill_between(bin_centers, counts, alpha=0.4, color=color, step="mid", label=label)
@@ -591,6 +606,51 @@ class CombinedActivationPlot:
 
             if self.show_legend and active_models and i == 0:
                 ax.legend(loc="upper right", fontsize=8, framealpha=0.95)
+
+    def _combine_distributions(self, model: str) -> tuple:
+        """Combine distributions from all components (input, block, mha, mlp, output) into one.
+
+        Returns (bin_centers, counts) or (None, None) if no data.
+        """
+        all_bin_centers = []
+        all_counts = []
+        total_samples = 0
+
+        # Include all components: input, block, mha, mlp, output
+        for comp in ["input", "block", "mha", "mlp", "output"]:
+            dist_data = self.data[model].get("distributions", {}).get(comp, {})
+            bin_centers = dist_data.get("bin_centers", [])
+            counts = dist_data.get("counts", [])
+            samples = dist_data.get("total_values_seen", 0)
+
+            if bin_centers and counts:
+                all_bin_centers.append(np.array(bin_centers))
+                all_counts.append(np.array(counts))
+                total_samples += samples
+
+        if not all_bin_centers:
+            return None, None
+
+        # Find global min/max across all components
+        global_min = min(bc.min() for bc in all_bin_centers)
+        global_max = max(bc.max() for bc in all_bin_centers)
+
+        # Create unified bins
+        num_bins = 1000
+        unified_edges = np.linspace(global_min, global_max, num_bins + 1)
+        unified_centers = (unified_edges[:-1] + unified_edges[1:]) / 2
+        unified_counts = np.zeros(num_bins)
+
+        # Re-bin each component's data into unified bins
+        for bin_centers, counts in zip(all_bin_centers, all_counts):
+            # Find which unified bin each original bin falls into
+            for j, (center, count) in enumerate(zip(bin_centers, counts)):
+                # Find the closest unified bin
+                bin_idx = np.searchsorted(unified_edges, center) - 1
+                bin_idx = max(0, min(bin_idx, num_bins - 1))
+                unified_counts[bin_idx] += count
+
+        return unified_centers, unified_counts
 
     def on_x_slider_change(self, val):
         self.dist_x_range = val

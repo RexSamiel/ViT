@@ -65,6 +65,7 @@ class ActivationAnalyzer:
         self.num_blocks = 0
         self._module_order: dict[str, int] = {}
         self._seen_storages: set = set()  # For deduplication within a batch
+        self._name_to_idx: dict[str, int] = {}  # Map module name to stable index
 
     def _reservoir_sample(self, new_values: np.ndarray, component: str) -> None:
         """Vectorized reservoir sampling for efficiency."""
@@ -210,8 +211,11 @@ class ActivationAnalyzer:
             else:
                 self._seen_storages.add(storage_id)
 
-        idx = self._layer_idx
-        self._layer_idx += 1
+        # Use module name as key (consistent across batches) instead of running counter
+        # Map name to a stable index for output ordering
+        if name not in self._name_to_idx:
+            self._name_to_idx[name] = len(self._name_to_idx)
+        idx = self._name_to_idx[name]
 
         # Check if this layer should be excluded based on EXCLUDE_PATTERNS
         name_lower = name.lower()
@@ -224,17 +228,24 @@ class ActivationAnalyzer:
                 excluded = True
                 break
 
-        self.layer_data[idx] = {
-            "min": val_min,
-            "max": val_max,
-            "component": component,
-            "name": name,
-            "op_type": module_type,
-            "block_idx": block_idx,
-            "shape": list(tensor.shape),
-            "is_duplicate": is_duplicate,
-            "excluded": excluded,
-        }
+        # ACCUMULATE min/max across batches instead of overwriting
+        if idx in self.layer_data:
+            # Update existing layer with new min/max
+            self.layer_data[idx]["min"] = min(self.layer_data[idx]["min"], val_min)
+            self.layer_data[idx]["max"] = max(self.layer_data[idx]["max"], val_max)
+        else:
+            # First time seeing this layer - initialize
+            self.layer_data[idx] = {
+                "min": val_min,
+                "max": val_max,
+                "component": component,
+                "name": name,
+                "op_type": module_type,
+                "block_idx": block_idx,
+                "shape": list(tensor.shape),
+                "is_duplicate": is_duplicate,
+                "excluded": excluded,
+            }
 
         # Skip from distribution if excluded or duplicate
         if excluded or is_duplicate:
@@ -365,6 +376,8 @@ class ActivationAnalyzer:
     def update(self, batch_size: int) -> None:
         self.total_samples += batch_size
         self.total_batches += 1
+        self._seen_storages.clear()  # Reset deduplication for next batch
+        self._max_block_seen = -1  # Reset for next batch's component classification
 
     def _compute_histogram(self, component: str) -> dict:
         samples = self._samples[component]
