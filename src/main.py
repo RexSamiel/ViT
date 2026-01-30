@@ -299,8 +299,10 @@ def parse_args():
     parser.add_argument("--component", type=str, default="all",
                         choices=["mlp", "norm", "attention", "patch_embed", "classifier", "all"])
     parser.add_argument("--sub_component", type=str, default=None)
-    parser.add_argument("--batch_size", type=int, default=None)
-    parser.add_argument("--max_batches", type=int, default=None)
+    parser.add_argument("--batch_size", type=str, default=None,
+                        help="Batch size (int or 'None' to use full batches)")
+    parser.add_argument("--max_batches", type=str, default=None,
+                        help="Max batches (int or 'None' for all batches)")
     return parser.parse_args()
 
 
@@ -317,6 +319,13 @@ def parse_bit_range(s: str) -> tuple[int, int] | None:
 def str_to_bool(s: str) -> bool:
     """Convert string to boolean."""
     return s.lower() in ("true", "1", "yes", "y")
+
+
+def int_or_none(s: str) -> int | None:
+    """Convert string to int or None."""
+    if s.lower() == "none":
+        return None
+    return int(s)
 
 
 def get_run_filename(args, config: Config) -> str:
@@ -501,10 +510,10 @@ def main():
     config = Config()
     config.model_key = args.model
     config.model_name = SUPPORTED_MODELS[args.model]
-    if args.batch_size:
-        config.batch_size = args.batch_size
-    if args.max_batches:
-        config.max_batches = args.max_batches
+    if args.batch_size is not None:
+        config.batch_size = int_or_none(args.batch_size)
+    if args.max_batches is not None:
+        config.max_batches = int_or_none(args.max_batches)
 
     verbose = str_to_bool(args.verbose)
     show_info = str_to_bool(args.info)
