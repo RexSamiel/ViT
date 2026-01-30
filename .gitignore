@@ -22,6 +22,7 @@ logs/
 *.pt
 run.sh
 .old/
+setting.py
 
 # Claude
 .claude/
