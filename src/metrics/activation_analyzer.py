@@ -5,11 +5,13 @@ Captures activation values from transformer layers using forward hooks,
 samples a configurable percentage of values, and computes integer-binned
 distributions for visualization.
 
+Uses incremental histograms for constant memory usage regardless of dataset size.
+
 Workflow:
 1. Register hooks on all modules
 2. Run inference - hooks capture activations
 3. Sample percentage of values from each layer (random)
-4. Sort and count values by integer bins
+4. Update integer-binned histogram counts incrementally
 5. Output JSON with layer info, min/max, and distributions
 """
 
@@ -30,9 +32,14 @@ EXCLUDE_PATTERNS: list[str] = [
     # "drop",         # Dropout layers
 ]
 
+# Histogram bin range (integer bins from -BIN_RANGE to +BIN_RANGE)
+# Covers activations in range [-10000, 10000] which is sufficient for most models
+_BIN_RANGE = 10000
+_NUM_BINS = 2 * _BIN_RANGE + 1  # 20001 bins total
+
 
 class ActivationAnalyzer:
-    """Simple activation analyzer with percentage-based sampling."""
+    """Memory-efficient activation analyzer with incremental histograms."""
 
     def __init__(self, sampling_percent: float = 1.0):
         """
@@ -44,7 +51,7 @@ class ActivationAnalyzer:
 
     def reset(self) -> None:
         """Reset all collected data."""
-        # Per-layer data: {layer_idx: {name, component, min, max, values}}
+        # Per-layer data: {layer_idx: {name, component, min, max, ...}}
         self.layer_data: dict[int, dict] = {}
 
         # Global stats per component
@@ -56,13 +63,17 @@ class ActivationAnalyzer:
             "mlp": {"min": float("inf"), "max": float("-inf")},
         }
 
-        # All sampled values per component (for histogram)
-        self._values: dict[str, list] = {
-            "input": [],
-            "output": [],
-            "block": [],
-            "mha": [],
-            "mlp": [],
+        # Incremental histogram counts per component (constant memory)
+        # Bins are integers from -_BIN_RANGE to +_BIN_RANGE
+        self._hist_counts: dict[str, np.ndarray] = {
+            comp: np.zeros(_NUM_BINS, dtype=np.int64)
+            for comp in ["input", "output", "block", "mha", "mlp"]
+        }
+
+        # Track actual data range seen (for reporting)
+        self._data_range: dict[str, dict] = {
+            comp: {"min": float("inf"), "max": float("-inf")}
+            for comp in ["input", "output", "block", "mha", "mlp"]
         }
 
         # Activation counts: total found vs sampled
@@ -123,7 +134,7 @@ class ActivationAnalyzer:
         component: str,
         block_idx: int | None,
     ) -> None:
-        """Record activation values from a layer."""
+        """Record activation values from a layer using incremental histograms."""
         num_elements = tensor.numel()
 
         # Assign stable index to layer
@@ -189,8 +200,22 @@ class ActivationAnalyzer:
         else:
             sampled = flat.float().cpu().numpy()
 
-        # Extend values list (numpy array, not list conversion)
-        self._values[component].append(sampled)
+        # Update data range tracking
+        sampled_min, sampled_max = sampled.min(), sampled.max()
+        self._data_range[component]["min"] = min(
+            self._data_range[component]["min"], sampled_min
+        )
+        self._data_range[component]["max"] = max(
+            self._data_range[component]["max"], sampled_max
+        )
+
+        # Incremental histogram update (constant memory)
+        # Convert values to bin indices: value 0 -> bin _BIN_RANGE, value -10000 -> bin 0
+        bin_indices = np.floor(sampled).astype(np.int64) + _BIN_RANGE
+        # Clip to valid range [0, _NUM_BINS-1]
+        bin_indices = np.clip(bin_indices, 0, _NUM_BINS - 1)
+        # Update histogram counts
+        np.add.at(self._hist_counts[component], bin_indices, 1)
 
     def register_hooks(self, model: nn.Module) -> int:
         """Register forward hooks on all modules."""
@@ -258,32 +283,37 @@ class ActivationAnalyzer:
         self._max_block_seen = -1
 
     def _compute_histogram(self, component: str) -> dict:
-        """Compute integer-binned histogram for a component."""
-        values = self._values[component]
-        if not values:
+        """Return the incrementally computed histogram for a component."""
+        counts = self._hist_counts[component]
+        total_sampled = int(counts.sum())
+
+        if total_sampled == 0:
             return {}
 
-        # Concatenate all numpy arrays efficiently
-        arr = np.concatenate(values) if len(values) > 1 else values[0]
-        arr = arr[np.isfinite(arr)]
-
-        if arr.size == 0:
+        # Find the actual range with non-zero counts to trim output
+        nonzero_indices = np.nonzero(counts)[0]
+        if len(nonzero_indices) == 0:
             return {}
 
-        # Get range
-        data_min = float(arr.min())
-        data_max = float(arr.max())
+        first_nonzero = nonzero_indices[0]
+        last_nonzero = nonzero_indices[-1]
 
-        # Integer binning: floor each value to get integer bin
-        int_min = int(np.floor(data_min))
-        int_max = int(np.ceil(data_max))
+        # Extract only the relevant portion
+        trimmed_counts = counts[first_nonzero : last_nonzero + 1]
 
-        # Create bins with width 1
-        bins = np.arange(int_min, int_max + 2, 1.0)  # +2 for right edge
-        counts, edges = np.histogram(arr, bins=bins)
+        # Convert bin indices back to values
+        # bin index 0 -> value -_BIN_RANGE, bin index _BIN_RANGE -> value 0
+        int_min = first_nonzero - _BIN_RANGE
+        int_max = last_nonzero - _BIN_RANGE
 
-        # Bin centers are the integers
-        centers = (edges[:-1] + edges[1:]) / 2
+        # Create bin edges and centers
+        edges = np.arange(int_min, int_max + 2, 1.0)
+        centers = np.arange(int_min, int_max + 1, 1.0) + 0.5
+
+        # Get actual data range
+        data_range = self._data_range[component]
+        data_min = data_range["min"] if data_range["min"] != float("inf") else int_min
+        data_max = data_range["max"] if data_range["max"] != float("-inf") else int_max
 
         # Get activation counts for this component
         counts_info = self._activation_counts[component]
@@ -291,10 +321,10 @@ class ActivationAnalyzer:
         return {
             "bin_edges": edges.tolist(),
             "bin_centers": centers.tolist(),
-            "counts": counts.tolist(),
-            "total_sampled": len(arr),
+            "counts": trimmed_counts.tolist(),
+            "total_sampled": total_sampled,
             "total_activations": counts_info["total"],
-            "data_range": [data_min, data_max],
+            "data_range": [float(data_min), float(data_max)],
         }
 
     def get_results(self) -> dict:
