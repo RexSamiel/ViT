@@ -217,13 +217,13 @@ class RunManager:
 class ActivationRunManager:
     """Manages activation analysis runs for transformer models."""
 
-    def __init__(self, config: Config, verbose: bool = True):
+    def __init__(self, config: Config, verbose: bool = True, sampling_percent: float = 10.0):
         self.config = config
         self.verbose = verbose
         self.evaluator = ModelEvaluator(config, verbose)
 
-        # Activation analyzer
-        self.analyzer = ActivationAnalyzer()
+        # Activation analyzer with configurable sampling
+        self.analyzer = ActivationAnalyzer(sampling_percent=sampling_percent)
 
         # AMP config
         unstable_fp16 = ["beit"]
@@ -321,6 +321,8 @@ def parse_args():
                         help="Max batches (int or 'None' for all batches)")
     parser.add_argument("--seed", type=int, default=None,
                         help="Random seed for reproducibility (default: random)")
+    parser.add_argument("--sampling", type=float, default=1.0,
+                        help="Percentage of activations to sample per layer (default: 1%%, min: 0.01%%)")
     return parser.parse_args()
 
 
@@ -527,7 +529,7 @@ def run_fault_injection(args, config: Config, verbose: bool, show_info: bool, se
 
 def run_activation_analysis(args, config: Config, verbose: bool) -> None:
     """Run activation analysis mode."""
-    manager = ActivationRunManager(config, verbose=verbose)
+    manager = ActivationRunManager(config, verbose=verbose, sampling_percent=args.sampling)
 
     # Run analysis
     results = manager.run()

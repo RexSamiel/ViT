@@ -19,13 +19,13 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.widgets import RadioButtons, CheckButtons, Slider, RangeSlider
+from matplotlib.widgets import RadioButtons, CheckButtons, Slider, RangeSlider, Button
 
 # Color palette for components (consistent with paper)
 COMPONENT_COLORS = {
     "block": "#3498DB",  # Blue
-    "mha": "#E67E22",    # Orange
-    "mlp": "#27AE60",    # Green
+    "mha": "#E67E22",  # Orange
+    "mlp": "#27AE60",  # Green
 }
 
 # Multiple model color variations
@@ -47,7 +47,7 @@ def get_label_from_path(path: str) -> str:
     name = Path(path).stem
     for prefix in ["activations_", "activation_"]:
         if name.startswith(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
     if len(name) > 25:
         name = name[:22] + "..."
     return name
@@ -75,6 +75,8 @@ class CombinedActivationPlot:
 
         # Zoom state for distributions
         self.dist_x_range = None
+        self.dist_y_active_powers = set()  # For multi-select toggle
+        self.y_pow_button_axes = []
 
         self.setup_figure()
 
@@ -85,16 +87,18 @@ class CombinedActivationPlot:
         self.main_area = plt.subplot2grid((26, 28), (0, 0), colspan=20, rowspan=22)
         self.main_area.axis("off")
 
-        # Zoom sliders area (for distributions)
+        # Zoom/control area for distributions
         self.slider_ax_x = plt.subplot2grid((26, 28), (23, 0), colspan=20, rowspan=1)
-        self.slider_ax_y = plt.subplot2grid((26, 28), (24, 0), colspan=20, rowspan=1)
+        self.pow10_ax = plt.subplot2grid((26, 28), (24, 0), colspan=20, rowspan=1) # Y-axis power selector
         self.slider_ax_x.set_visible(False)
-        self.slider_ax_y.set_visible(False)
+        self.pow10_ax.set_visible(False)
 
         # Control panels
         self.view_ax = plt.subplot2grid((26, 28), (0, 21), colspan=7, rowspan=3)
         self.style_ax = plt.subplot2grid((26, 28), (3, 21), colspan=7, rowspan=3)
-        self.model_ax = plt.subplot2grid((26, 28), (7, 21), colspan=7, rowspan=min(len(self.models) + 1, 5))
+        self.model_ax = plt.subplot2grid(
+            (26, 28), (7, 21), colspan=7, rowspan=min(len(self.models) + 1, 5)
+        )
         self.component_ax = plt.subplot2grid((26, 28), (13, 21), colspan=7, rowspan=5)
         self.options_ax = plt.subplot2grid((26, 28), (18, 21), colspan=7, rowspan=3)
 
@@ -104,29 +108,39 @@ class CombinedActivationPlot:
     def setup_controls(self):
         # View mode selection
         self.view_ax.set_title("View Mode", fontsize=10, fontweight="bold")
-        self.view_radio = RadioButtons(self.view_ax, ("Activation Ranges", "Distributions"), active=0)
+        self.view_radio = RadioButtons(
+            self.view_ax, ("Activation Ranges", "Distributions"), active=0
+        )
         self.view_radio.on_clicked(self.on_view_change)
 
         # Range style selection (detailed vs combined)
         self.style_ax.set_title("Range Style", fontsize=10, fontweight="bold")
-        self.style_radio = RadioButtons(self.style_ax, ("Detailed (Per-Layer)", "Combined (Paper)"), active=0)
+        self.style_radio = RadioButtons(
+            self.style_ax, ("Detailed (Per-Layer)", "Combined (Paper)"), active=0
+        )
         self.style_radio.on_clicked(self.on_style_change)
 
         # Model selection
         self.model_ax.set_title("Models", fontsize=10, fontweight="bold")
-        self.model_check = CheckButtons(self.model_ax, self.models, [True] * len(self.models))
+        self.model_check = CheckButtons(
+            self.model_ax, self.models, [True] * len(self.models)
+        )
         self.model_check.on_clicked(self.on_model_change)
 
         # Component selection
         self.component_ax.set_title("Components", fontsize=10, fontweight="bold")
         self.component_check = CheckButtons(
-            self.component_ax, ["Block", "MHA", "MLP", "Combined All"], [True, True, True, False]
+            self.component_ax,
+            ["Block", "MHA", "MLP", "Combined All"],
+            [True, True, True, False],
         )
         self.component_check.on_clicked(self.on_component_change)
 
         # Options
         self.options_ax.set_title("Options", fontsize=10, fontweight="bold")
-        self.options_check = CheckButtons(self.options_ax, ["Log Scale", "Legend"], [True, True])
+        self.options_check = CheckButtons(
+            self.options_ax, ["Log Scale", "Legend"], [True, True]
+        )
         self.options_check.on_clicked(self.on_options_change)
 
     def on_view_change(self, label):
@@ -160,24 +174,36 @@ class CombinedActivationPlot:
         self.update_plot()
 
     def update_plot(self):
-        # Clear previous axes
+        # First, manually clean up the button axes we created, because the main loop won't
+        for ax in getattr(self, 'y_pow_button_axes', []):
+            self.fig.delaxes(ax)
+        self.y_pow_button_axes = []
+        
+        # Clear previous main plot axes
         for ax in self.fig.axes[:]:
-            if ax not in [self.view_ax, self.style_ax, self.model_ax, self.component_ax,
-                          self.options_ax, self.slider_ax_x, self.slider_ax_y]:
+            if ax not in [
+                self.view_ax,
+                self.style_ax,
+                self.model_ax,
+                self.component_ax,
+                self.options_ax,
+                self.slider_ax_x,
+                self.pow10_ax,
+            ]:
                 if ax != self.main_area:
                     self.fig.delaxes(ax)
-
+        
         self.main_area.clear()
         self.main_area.axis("off")
 
         # Show/hide sliders and style selector based on view mode
         if self.view_mode == "distributions":
             self.slider_ax_x.set_visible(True)
-            self.slider_ax_y.set_visible(True)
+            self.pow10_ax.set_visible(True)
             self.style_ax.set_visible(False)
         else:
             self.slider_ax_x.set_visible(False)
-            self.slider_ax_y.set_visible(False)
+            self.pow10_ax.set_visible(False)
             self.style_ax.set_visible(True)
 
         if self.view_mode == "ranges":
@@ -197,7 +223,9 @@ class CombinedActivationPlot:
 
         active_models = [m for m in self.models if self.show_models[m]]
         if not active_models:
-            ax.text(0.5, 0.5, "No models selected", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5, 0.5, "No models selected", ha="center", va="center", fontsize=14
+            )
             return
 
         components = []
@@ -209,7 +237,14 @@ class CombinedActivationPlot:
             components.append("block")
 
         if not components:
-            ax.text(0.5, 0.5, "No components selected", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                "No components selected",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
             return
 
         added_labels = set()
@@ -217,7 +252,9 @@ class CombinedActivationPlot:
 
         for model_idx, model in enumerate(active_models):
             model_data = self.data[model]
-            colors = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])
+            colors = self.colors.get(
+                model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)]
+            )
 
             # Get layers data
             if "layers" in model_data:
@@ -225,7 +262,9 @@ class CombinedActivationPlot:
             else:
                 layers_data = {}
                 for comp in ["block", "mha", "mlp"]:
-                    comp_layers = model_data.get("ranges", {}).get(comp, {}).get("layers", {})
+                    comp_layers = (
+                        model_data.get("ranges", {}).get(comp, {}).get("layers", {})
+                    )
                     for idx, info in comp_layers.items():
                         layers_data[idx] = {**info, "component": comp}
 
@@ -233,8 +272,11 @@ class CombinedActivationPlot:
                 continue
 
             for comp in components:
-                comp_layers = [(int(idx), info) for idx, info in layers_data.items()
-                              if info.get("component") == comp]
+                comp_layers = [
+                    (int(idx), info)
+                    for idx, info in layers_data.items()
+                    if info.get("component") == comp
+                ]
 
                 if not comp_layers:
                     continue
@@ -244,9 +286,17 @@ class CombinedActivationPlot:
 
                 label_key = f"{model}_{comp}"
                 if len(active_models) == 1:
-                    label = comp.upper() if self.show_legend and label_key not in added_labels else None
+                    label = (
+                        comp.upper()
+                        if self.show_legend and label_key not in added_labels
+                        else None
+                    )
                 else:
-                    label = f"{model} {comp.upper()}" if self.show_legend and label_key not in added_labels else None
+                    label = (
+                        f"{model} {comp.upper()}"
+                        if self.show_legend and label_key not in added_labels
+                        else None
+                    )
 
                 if label:
                     added_labels.add(label_key)
@@ -256,13 +306,37 @@ class CombinedActivationPlot:
                     max_v = info["max"]
                     all_x_values.append(layer_idx)
 
-                    ax.vlines(layer_idx, min_v, max_v, colors=color, linewidth=1.5, alpha=0.7)
-                    ax.scatter([layer_idx], [min_v], color=color, marker="_", s=40, zorder=3, linewidths=1.5)
-                    ax.scatter([layer_idx], [max_v], color=color, marker="o", s=20,
-                              label=label if i == 0 else None, zorder=3)
+                    ax.vlines(
+                        layer_idx, min_v, max_v, colors=color, linewidth=1.5, alpha=0.7
+                    )
+                    ax.scatter(
+                        [layer_idx],
+                        [min_v],
+                        color=color,
+                        marker="_",
+                        s=40,
+                        zorder=3,
+                        linewidths=1.5,
+                    )
+                    ax.scatter(
+                        [layer_idx],
+                        [max_v],
+                        color=color,
+                        marker="o",
+                        s=20,
+                        label=label if i == 0 else None,
+                        zorder=3,
+                    )
 
         if not all_x_values:
-            ax.text(0.5, 0.5, "No layer data available", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                "No layer data available",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
             return
 
         self._format_range_axis(ax, all_x_values, "Detailed View - All Layers")
@@ -278,7 +352,9 @@ class CombinedActivationPlot:
 
         active_models = [m for m in self.models if self.show_models[m]]
         if not active_models:
-            ax.text(0.5, 0.5, "No models selected", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5, 0.5, "No models selected", ha="center", va="center", fontsize=14
+            )
             return
 
         components = []
@@ -290,7 +366,14 @@ class CombinedActivationPlot:
             components.append("block")
 
         if not components:
-            ax.text(0.5, 0.5, "No components selected", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                "No components selected",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
             return
 
         added_labels = set()
@@ -300,7 +383,9 @@ class CombinedActivationPlot:
 
         for model_idx, model in enumerate(active_models):
             model_data = self.data[model]
-            colors = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])
+            colors = self.colors.get(
+                model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)]
+            )
 
             # Get block-aggregated data
             block_agg = model_data.get("block_aggregated", {})
@@ -331,7 +416,9 @@ class CombinedActivationPlot:
                     comps_to_plot = ["block"] if "block" in components else []
                 else:
                     # Normal blocks show MHA, MLP, Block
-                    comps_to_plot = [c for c in ["mha", "mlp", "block"] if c in components]
+                    comps_to_plot = [
+                        c for c in ["mha", "mlp", "block"] if c in components
+                    ]
 
                 for comp in comps_to_plot:
                     if comp not in block_data:
@@ -353,23 +440,55 @@ class CombinedActivationPlot:
                     label_key = f"{model}_{comp}"
 
                     if len(active_models) == 1:
-                        label = comp.upper() if self.show_legend and label_key not in added_labels else None
+                        label = (
+                            comp.upper()
+                            if self.show_legend and label_key not in added_labels
+                            else None
+                        )
                     else:
-                        label = f"{model} {comp.upper()}" if self.show_legend and label_key not in added_labels else None
+                        label = (
+                            f"{model} {comp.upper()}"
+                            if self.show_legend and label_key not in added_labels
+                            else None
+                        )
 
                     all_x_values.append(layer_idx)
 
                     # Draw vertical line and markers
-                    ax.vlines(layer_idx, min_v, max_v, colors=color, linewidth=2, alpha=0.8)
-                    ax.scatter([layer_idx], [min_v], color=color, marker="_", s=60, zorder=3, linewidths=2)
-                    ax.scatter([layer_idx], [max_v], color=color, marker="o", s=30,
-                              label=label, zorder=3)
+                    ax.vlines(
+                        layer_idx, min_v, max_v, colors=color, linewidth=2, alpha=0.8
+                    )
+                    ax.scatter(
+                        [layer_idx],
+                        [min_v],
+                        color=color,
+                        marker="_",
+                        s=60,
+                        zorder=3,
+                        linewidths=2,
+                    )
+                    ax.scatter(
+                        [layer_idx],
+                        [max_v],
+                        color=color,
+                        marker="o",
+                        s=30,
+                        label=label,
+                        zorder=3,
+                    )
 
                     if label:
                         added_labels.add(label_key)
 
         if not all_x_values:
-            ax.text(0.5, 0.5, "No block data available", ha="center", va="center", fontsize=14)
+            ax.text(
+                0.5,
+                0.5,
+                "No block data available",
+                ha="center",
+                va="center",
+                fontsize=14,
+            )
             return
 
         # Set x-axis ticks to show layer indices
@@ -377,9 +496,13 @@ class CombinedActivationPlot:
             ax.set_xticks(x_tick_positions)
             ax.set_xticklabels(x_tick_labels, fontsize=9)
 
-        num_blocks = len(block_indices) if 'block_indices' in dir() else 12
-        self._format_range_axis(ax, all_x_values, f"Combined View - Per Block ({num_blocks} blocks)",
-                               xlabel="Layer index")
+        num_blocks = len(block_indices) if "block_indices" in dir() else 12
+        self._format_range_axis(
+            ax,
+            all_x_values,
+            f"Combined View - Per Block ({num_blocks} blocks)",
+            xlabel="Layer index",
+        )
 
     def _compute_block_aggregated(self, model_data: dict) -> dict:
         """Compute block-aggregated data from layers if not available.
@@ -401,9 +524,21 @@ class CombinedActivationPlot:
             block_key = str(block_idx)
             if block_key not in block_agg:
                 block_agg[block_key] = {
-                    "mha": {"min": float("inf"), "max": float("-inf"), "last_layer_idx": -1},
-                    "mlp": {"min": float("inf"), "max": float("-inf"), "last_layer_idx": -1},
-                    "block": {"min": float("inf"), "max": float("-inf"), "last_layer_idx": -1},
+                    "mha": {
+                        "min": float("inf"),
+                        "max": float("-inf"),
+                        "last_layer_idx": -1,
+                    },
+                    "mlp": {
+                        "min": float("inf"),
+                        "max": float("-inf"),
+                        "last_layer_idx": -1,
+                    },
+                    "block": {
+                        "min": float("inf"),
+                        "max": float("-inf"),
+                        "last_layer_idx": -1,
+                    },
                 }
 
             layer_idx = int(idx)
@@ -411,8 +546,12 @@ class CombinedActivationPlot:
             max_v = layer_info["max"]
 
             # Update only the component's own stats
-            block_agg[block_key][comp]["min"] = min(block_agg[block_key][comp]["min"], min_v)
-            block_agg[block_key][comp]["max"] = max(block_agg[block_key][comp]["max"], max_v)
+            block_agg[block_key][comp]["min"] = min(
+                block_agg[block_key][comp]["min"], min_v
+            )
+            block_agg[block_key][comp]["max"] = max(
+                block_agg[block_key][comp]["max"], max_v
+            )
             block_agg[block_key][comp]["last_layer_idx"] = max(
                 block_agg[block_key][comp]["last_layer_idx"], layer_idx
             )
@@ -420,7 +559,9 @@ class CombinedActivationPlot:
         # Clean up infinities
         for block_key in block_agg:
             for comp in ["mha", "mlp", "block"]:
-                if comp in block_agg[block_key] and block_agg[block_key][comp]["min"] == float("inf"):
+                if comp in block_agg[block_key] and block_agg[block_key][comp][
+                    "min"
+                ] == float("inf"):
                     del block_agg[block_key][comp]
 
         return block_agg
@@ -488,9 +629,25 @@ class CombinedActivationPlot:
             ax.set_xticks(range(min_x, max_x + 1, tick_step))
 
         # Grid styling - more visible horizontal lines like the paper
-        ax.grid(True, which='major', axis='y', alpha=0.6, linestyle='-', linewidth=0.8, color='#cccccc')
-        ax.grid(True, which='minor', axis='y', alpha=0.3, linestyle='-', linewidth=0.5, color='#dddddd')
-        ax.grid(True, which='major', axis='x', alpha=0.3, linestyle='--', linewidth=0.5)
+        ax.grid(
+            True,
+            which="major",
+            axis="y",
+            alpha=0.6,
+            linestyle="-",
+            linewidth=0.8,
+            color="#cccccc",
+        )
+        ax.grid(
+            True,
+            which="minor",
+            axis="y",
+            alpha=0.3,
+            linestyle="-",
+            linewidth=0.5,
+            color="#dddddd",
+        )
+        ax.grid(True, which="major", axis="x", alpha=0.3, linestyle="--", linewidth=0.5)
 
         ax.set_facecolor("#FAFBFC")
         ax.spines["top"].set_visible(False)
@@ -500,7 +657,13 @@ class CombinedActivationPlot:
             ax.legend(loc="upper left", fontsize=9, framealpha=0.95, ncol=3)
 
     def plot_distributions(self):
-        """Plot activation distributions (Fig 3 style) with zoom sliders."""
+        """Plot activation distributions with an optionally segmented y-axis.
+
+        Y-axis segmentation:
+        - Auto (default): Standard log scale, autoscaled to data
+        - Selected powers (e.g., 10^3 and 10^8): Creates equal-height visual segments
+          [1→10^3] and [10^3→10^8] each take 50% of vertical space
+        """
         components = []
         if self.show_combined_all:
             components.append(("combined_all", "COMBINED (All Components)"))
@@ -517,95 +680,190 @@ class CombinedActivationPlot:
             ax.text(0.5, 0.5, "No components selected", ha="center", va="center", fontsize=14)
             return
 
-        gs = self.main_area.get_subplotspec().subgridspec(len(components), 1, hspace=0.35)
+        # Determine y-axis segments from active powers
+        active_powers = sorted([float(p) for p in self.dist_y_active_powers])
+
+        # Build segment boundaries
+        if active_powers:
+            segments = [1.0] + active_powers
+        else:
+            segments = None
+
+        num_segments = len(segments) - 1 if segments else 1
+
         active_models = [m for m in self.models if self.show_models[m]]
 
-        # Calculate global x range (include all components for range calculation)
+        # Calculate global x-range from FULL data range (using data_range if available)
         all_x_min, all_x_max = float("inf"), float("-inf")
+        global_y_max = 0
         for model in active_models:
-            for comp in ["block", "mha", "mlp"]:
-                dist_data = self.data[model].get("distributions", {}).get(comp, {})
-                if dist_data.get("bin_centers"):
-                    all_x_min = min(all_x_min, min(dist_data["bin_centers"]))
-                    all_x_max = max(all_x_max, max(dist_data["bin_centers"]))
+            for comp_key, _ in components:
+                comps_to_check = ["block", "mha", "mlp", "input", "output"] if comp_key == "combined_all" else [comp_key]
+                for sub_comp in comps_to_check:
+                    # Use _get_data_range for full coverage
+                    x_min, x_max = self._get_data_range(model, sub_comp)
+                    if x_min is not None:
+                        all_x_min = min(all_x_min, x_min)
+                        all_x_max = max(all_x_max, x_max)
+
+                    dist_data = self.data[model].get("distributions", {}).get(sub_comp, {})
+                    if dist_data.get("counts"):
+                        global_y_max = max(global_y_max, max(dist_data["counts"]))
 
         if all_x_min == float("inf"):
             all_x_min, all_x_max = -100, 100
 
-        # Setup sliders
+        # Reset x_range to full data range on each plot update
+        self.dist_x_range = (all_x_min, all_x_max)
+
+        # Setup X range slider with full data range
         self.slider_ax_x.clear()
-        self.slider_ax_y.clear()
-
-        if self.dist_x_range is None:
-            self.dist_x_range = (all_x_min, all_x_max)
-
-        self.x_slider = RangeSlider(
-            self.slider_ax_x, "X Range",
-            all_x_min, all_x_max,
-            valinit=self.dist_x_range,
-            valstep=(all_x_max - all_x_min) / 100
-        )
+        self.pow10_ax.clear()
+        self.pow10_ax.axis('off')
+        self.x_slider = RangeSlider(self.slider_ax_x, "X Range", all_x_min, all_x_max, valinit=self.dist_x_range)
         self.x_slider.on_changed(self.on_x_slider_change)
 
-        self.y_slider = Slider(
-            self.slider_ax_y, "Y Zoom",
-            0.1, 10.0,
-            valinit=1.0,
-            valstep=0.1
-        )
-        self.y_slider.on_changed(self.on_y_slider_change)
+        # Setup Y power buttons
+        self.y_pow_buttons = []
+        labels = ("Auto",) + tuple(f"10^{i}" for i in range(1, 11))
+        btn_width = self.pow10_ax.get_position().width / len(labels)
+        for i, label in enumerate(labels):
+            ax_btn = self.fig.add_axes([
+                self.pow10_ax.get_position().x0 + i * btn_width,
+                self.pow10_ax.get_position().y0,
+                btn_width,
+                self.pow10_ax.get_position().height
+            ])
+            self.y_pow_button_axes.append(ax_btn)
+            power_val = label.replace("10^", "1e")
+            is_active = (power_val in self.dist_y_active_powers) or (label == "Auto" and not self.dist_y_active_powers)
+            button = Button(ax_btn, label, color='#90EE90' if is_active else 'white')
+            button.on_clicked(lambda event, lbl=label: self.on_y_power_click(lbl))
+            self.y_pow_buttons.append(button)
+
+        # Create main grid for components
+        gs = self.main_area.get_subplotspec().subgridspec(len(components), 1, hspace=0.4)
 
         self.dist_axes = []
-        for i, (comp, title) in enumerate(components):
-            ax = self.fig.add_subplot(gs[i, 0])
-            self.dist_axes.append(ax)
+
+        for comp_idx, (comp, title) in enumerate(components):
+            if segments and num_segments > 1:
+                # Create equal-height stacked axes for segmented view
+                sub_gs = gs[comp_idx].subgridspec(num_segments, 1, hspace=0.05)
+                # Axes from bottom to top (index 0 = bottom segment)
+                axes_stack = [self.fig.add_subplot(sub_gs[num_segments - 1 - j]) for j in range(num_segments)]
+            else:
+                # Single axis for auto mode
+                axes_stack = [self.fig.add_subplot(gs[comp_idx])]
 
             if not active_models:
-                ax.text(0.5, 0.5, "No models selected", ha="center", va="center", fontsize=12)
+                axes_stack[0].text(0.5, 0.5, "No models selected", ha="center", va="center", fontsize=12)
                 continue
 
-            for model_idx, model in enumerate(active_models):
-                if comp == "combined_all":
-                    # Combine all component distributions for this model
-                    combined_centers, combined_counts = self._combine_distributions(model)
-                    if combined_centers is None:
-                        continue
-                    bin_centers = combined_centers
-                    counts = combined_counts
-                    # Use a distinct color for combined view
-                    color = "#8E44AD"  # Purple for combined
-                else:
-                    dist_data = self.data[model].get("distributions", {}).get(comp, {})
-                    bin_centers = dist_data.get("bin_centers", [])
-                    counts = dist_data.get("counts", [])
+            self.dist_axes.append(axes_stack[0])
 
-                    if not bin_centers or not counts:
-                        continue
+            # Share X axis among the stack
+            for j in range(1, len(axes_stack)):
+                axes_stack[j].sharex(axes_stack[0])
 
-                    color = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])[comp]
+            # Plot data on each segment
+            for seg_idx, ax in enumerate(axes_stack):
+                for model_idx, model in enumerate(active_models):
+                    if comp == "combined_all":
+                        bin_centers, counts = self._combine_distributions(model)
+                        if bin_centers is None:
+                            continue
+                        color = "#8E44AD"
+                    else:
+                        dist_data = self.data[model].get("distributions", {}).get(comp, {})
+                        bin_centers = dist_data.get("bin_centers", [])
+                        counts = dist_data.get("counts", [])
+                        if not bin_centers or not counts:
+                            continue
+                        color = self.colors.get(model, MODEL_PALETTES[model_idx % len(MODEL_PALETTES)])[comp]
+
+                    # Convert to numpy arrays
                     bin_centers = np.array(bin_centers)
-                    counts = np.array(counts)
+                    counts = np.array(counts, dtype=float)
 
-                label = model if self.show_legend else None
-                ax.fill_between(bin_centers, counts, alpha=0.4, color=color, step="mid", label=label)
-                ax.step(bin_centers, counts, where="mid", color=color, linewidth=1.5, alpha=0.8)
+                    # For log scale: set floor at 1 (counts of 0 don't show)
+                    counts_plot = np.maximum(counts, 1.0)
 
-            ax.set_title(title, fontsize=11, fontweight="bold", loc="left")
-            ax.set_xlabel("Activation Value", fontsize=10)
-            ax.set_ylabel("Frequency (log)" if self.use_log_scale else "Frequency", fontsize=10)
+                    # Plot with staircase bars (integer bins)
+                    label = model if self.show_legend and comp_idx == 0 and seg_idx == len(axes_stack) - 1 else None
+                    ax.fill_between(bin_centers, 1.0, counts_plot, alpha=0.5, color=color, step="mid", label=label)
+                    ax.step(bin_centers, counts_plot, where="mid", color=color, linewidth=0.5, alpha=0.9)
 
-            if self.use_log_scale:
-                ax.set_yscale("log")
+                # Set y-limits based on segment
+                is_bottom = (seg_idx == 0)
+                is_top = (seg_idx == len(axes_stack) - 1)
 
-            ax.set_xlim(self.dist_x_range)
-            ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-            ax.grid(True, alpha=0.3, linestyle="--")
-            ax.set_facecolor("#FAFBFC")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
+                if segments and num_segments > 1:
+                    # Multiple powers selected: segmented view
+                    bottom_lim = segments[seg_idx]
+                    top_lim = segments[seg_idx + 1]
+                    ax.set_ylim(bottom=bottom_lim, top=top_lim)
+                elif len(active_powers) == 1:
+                    # Single power selected: use as max y-limit (no segmentation)
+                    ax.set_ylim(bottom=1.0, top=active_powers[0])
+                else:
+                    # Auto mode: scale to global max with 20% buffer
+                    y_max_with_buffer = global_y_max * 1.2 if global_y_max > 0 else 100
+                    ax.set_ylim(bottom=1.0, top=y_max_with_buffer)
 
-            if self.show_legend and active_models and i == 0:
-                ax.legend(loc="upper right", fontsize=8, framealpha=0.95)
+                ax.set_xlim(self.dist_x_range)
+                if self.use_log_scale:
+                    ax.set_yscale("log")
+
+                # Styling - only add grid for non-segmented or at segment midpoints
+                ax.axvline(x=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+
+                if segments and num_segments > 1:
+                    # Hide spines between segments
+                    ax.spines['top'].set_visible(is_top)
+                    ax.spines['bottom'].set_visible(is_bottom)
+
+                    # NO grid lines in segmented mode to avoid the horizontal line issue
+                    ax.grid(False)
+
+                    # Add diagonal break marks
+                    d = 0.015
+                    kwargs = dict(transform=ax.transAxes, color='k', clip_on=False, linewidth=1)
+                    if not is_top:
+                        ax.plot((-d, +d), (1 - d, 1 + d), **kwargs)
+                        ax.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs)
+                    if not is_bottom:
+                        ax.plot((-d, +d), (-d, +d), **kwargs)
+                        ax.plot((1 - d, 1 + d), (-d, +d), **kwargs)
+
+                    # Y-axis ticks: only show at boundaries, avoiding duplicates
+                    if is_bottom:
+                        ax.set_yticks([bottom_lim])
+                    elif is_top:
+                        ax.set_yticks([top_lim])
+                    else:
+                        ax.set_yticks([])  # Middle segments: no ticks
+
+                    ax.yaxis.set_major_formatter(plt.FuncFormatter(
+                        lambda x, p: f"$10^{{{int(np.log10(x))}}}$" if x >= 1 else "1"
+                    ))
+                else:
+                    # Non-segmented: show grid
+                    ax.grid(True, alpha=0.3, linestyle="--")
+
+                # X-axis labels only on bottom
+                ax.tick_params(axis='x', which='both', bottom=is_bottom, labelbottom=is_bottom)
+                if is_bottom:
+                    ax.set_xlabel("Activation Value", fontsize=10)
+
+                # Y-label in middle segment
+                if seg_idx == len(axes_stack) // 2:
+                    ax.set_ylabel("Frequency", fontsize=10)
+
+            # Title on top axis
+            axes_stack[-1].set_title(title, fontsize=11, fontweight="bold", loc="left")
+            if self.show_legend and active_models:
+                axes_stack[-1].legend(loc="upper right", fontsize=8)
 
     def _combine_distributions(self, model: str) -> tuple:
         """Combine distributions from all components (input, block, mha, mlp, output) into one.
@@ -635,39 +893,68 @@ class CombinedActivationPlot:
         global_min = min(bc.min() for bc in all_bin_centers)
         global_max = max(bc.max() for bc in all_bin_centers)
 
-        # Create unified bins
-        num_bins = 1000
+        # Create unified bins with good resolution
+        num_bins = 2000  # Higher resolution for combined view
         unified_edges = np.linspace(global_min, global_max, num_bins + 1)
         unified_centers = (unified_edges[:-1] + unified_edges[1:]) / 2
         unified_counts = np.zeros(num_bins)
 
-        # Re-bin each component's data into unified bins
-        for bin_centers, counts in zip(all_bin_centers, all_counts):
-            # Find which unified bin each original bin falls into
-            for j, (center, count) in enumerate(zip(bin_centers, counts)):
-                # Find the closest unified bin
-                bin_idx = np.searchsorted(unified_edges, center) - 1
-                bin_idx = max(0, min(bin_idx, num_bins - 1))
-                unified_counts[bin_idx] += count
+        # Vectorized re-binning for performance
+        all_centers_flat = np.concatenate(all_bin_centers)
+        all_counts_flat = np.concatenate(all_counts)
+
+        # Find which unified bin each original center falls into
+        bin_indices = np.searchsorted(unified_edges, all_centers_flat, side='right') - 1
+
+        # Clip indices to be within the valid range [0, num_bins-1]
+        bin_indices = np.clip(bin_indices, 0, num_bins - 1)
+
+        # Add counts to the appropriate bins in a vectorized way
+        np.add.at(unified_counts, bin_indices, all_counts_flat)
 
         return unified_centers, unified_counts
 
+    def _get_data_range(self, model: str, comp: str) -> tuple:
+        """Get the data range for a component from histogram output."""
+        dist_data = self.data[model].get("distributions", {}).get(comp, {})
+
+        # Try data_range first (new format)
+        data_range = dist_data.get("data_range")
+        if data_range and len(data_range) == 2:
+            return data_range[0], data_range[1]
+
+        # Try x_range (alternative format)
+        x_range = dist_data.get("x_range")
+        if x_range and len(x_range) == 2:
+            return x_range[0], x_range[1]
+
+        # Fallback to bin_centers range
+        bin_centers = dist_data.get("bin_centers", [])
+        if bin_centers:
+            return min(bin_centers), max(bin_centers)
+
+        return None, None
+
     def on_x_slider_change(self, val):
         self.dist_x_range = val
-        for ax in getattr(self, 'dist_axes', []):
+        for ax in getattr(self, "dist_axes", []):
             if ax in self.fig.axes:
                 ax.set_xlim(val)
         self.fig.canvas.draw_idle()
 
-    def on_y_slider_change(self, val):
-        for ax in getattr(self, 'dist_axes', []):
-            if ax in self.fig.axes:
-                ylim = ax.get_ylim()
-                if self.use_log_scale:
-                    ax.set_ylim(ylim[0], ylim[1] / val)
-                else:
-                    ax.set_ylim(0, ylim[1] / val)
-        self.fig.canvas.draw_idle()
+    def on_y_power_click(self, label):
+        """Handle Y-axis limit selection from button click."""
+        if label == "Auto":
+            self.dist_y_active_powers.clear()
+        else:
+            power_val = label.replace("10^", "1e")
+            if power_val in self.dist_y_active_powers:
+                self.dist_y_active_powers.remove(power_val)
+            else:
+                self.dist_y_active_powers.add(power_val)
+        
+        self.update_plot()
+
 
 
 def main():
@@ -684,7 +971,7 @@ Creates two graph types from the paper:
     - Detailed: Shows all individual layers
     - Combined (Paper): Shows aggregated min/max per block (MHA, MLP, Block)
   - Distributions (Fig 3): Histogram of activation values with zoom controls
-        """
+        """,
     )
     parser.add_argument("files", nargs="+", help="Activation JSON result files to plot")
 
@@ -712,9 +999,11 @@ Creates two graph types from the paper:
     print(f"Loaded {len(models)} activation datasets:")
     for label in models:
         stats = data[label].get("statistics", {})
-        print(f"  - {label}: {stats.get('total_samples', '?')} samples, "
-              f"{stats.get('total_layers', '?')} layers, "
-              f"{stats.get('num_blocks', '?')} blocks")
+        print(
+            f"  - {label}: {stats.get('total_samples', '?')} samples, "
+            f"{stats.get('total_layers', '?')} layers, "
+            f"{stats.get('num_blocks', '?')} blocks"
+        )
 
     plotter = CombinedActivationPlot(data, models, colors)
     plt.show()
