@@ -62,14 +62,46 @@ def load_json(path: str) -> list[dict]:
         return data
 
 
-def get_label_from_path(path: str) -> str:
-    """Extract a clean label from file path."""
-    name = Path(path).stem  # filename without extension
+def get_label_from_path(path: str, include_parent: bool = False) -> str:
+    """Extract a clean label from file path.
+
+    Args:
+        path: The file path
+        include_parent: If True, prepend the parent directory name for disambiguation
+    """
+    p = Path(path)
+    name = p.stem  # filename without extension
     # Remove common prefixes/suffixes for cleaner labels
     for prefix in ["summary_", "results_"]:
         if name.startswith(prefix):
             name = name[len(prefix):]
+
+    if include_parent and p.parent.name:
+        return f"{p.parent.name}/{name}"
     return name
+
+
+def generate_unique_labels(paths: list[str]) -> list[str]:
+    """Generate unique labels for file paths, adding parent directory when needed."""
+    # First pass: generate basic labels
+    basic_labels = [get_label_from_path(p, include_parent=False) for p in paths]
+
+    # Find duplicates
+    label_counts = {}
+    for label in basic_labels:
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    duplicates = {label for label, count in label_counts.items() if count > 1}
+
+    # Second pass: add parent directory for duplicates
+    final_labels = []
+    for path, basic_label in zip(paths, basic_labels):
+        if basic_label in duplicates:
+            final_labels.append(get_label_from_path(path, include_parent=True))
+        else:
+            final_labels.append(basic_label)
+
+    return final_labels
 
 
 def get_model_key_from_path(path: str) -> str:
@@ -844,14 +876,12 @@ Examples:
             print(f"Error: File not found: {f}")
             sys.exit(1)
 
-    # Load data from all files
-    models = []
+    # Load data from all files - generate unique labels first
+    models = generate_unique_labels(args.files)
     colors = {}
     baseline_acc = {}
 
-    for i, path in enumerate(args.files):
-        label = get_label_from_path(path)
-        models.append(label)
+    for i, (path, label) in enumerate(zip(args.files, models)):
         colors[label] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
 
         # Load and extract baseline accuracy
