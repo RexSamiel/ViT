@@ -1,4 +1,4 @@
- VisionTransformer(
+VisionTransformer(
   (patch_embed): PatchEmbed(
     (proj): Conv2d(3, 192, kernel_size=(16, 16), stride=(16, 16))
     (norm): Identity()

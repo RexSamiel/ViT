@@ -8,11 +8,11 @@ from timm.data.config import resolve_data_config
 from timm.data.transforms_factory import create_transform
 
 from src.config.settings import Config
-from src.data.imagenet_loader import ImageNetValDataset
-from src.utils.logits import FaultFreeLogits
+from src.core.library.imagenet_loader import ImageNetValDataset
+from src.core.library.logits import FaultFreeLogits
 
 
-class ModelEvaluator:
+class ModelRunner:
     """Handles model loading, data loading, and inference caching."""
 
     def __init__(self, config: Config, verbose: bool = True):
@@ -29,14 +29,12 @@ class ModelEvaluator:
         if self.verbose:
             print(f"Loading model: {self.config.model_name}")
 
-        # Enable cuDNN autotuning for fixed input sizes (faster convolutions)
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
 
-        model = timm.create_model(
-            self.config.model_name,
-            pretrained=True
-        ).to(self.config.device)
+        model = timm.create_model(self.config.model_name, pretrained=True).to(
+            self.config.device
+        )
         model.eval()
 
         # Warm-up pass to compile CUDA kernels
@@ -58,15 +56,16 @@ class ModelEvaluator:
             data_cfg = resolve_data_config(self.model.pretrained_cfg)
             return create_transform(is_training=False, **data_cfg)
         except Exception:
-            return transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                ),
-            ])
+            return transforms.Compose(
+                [
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    ),
+                ]
+            )
 
     def _create_dataloader(self) -> DataLoader:
         """Create validation dataloader."""
@@ -126,6 +125,8 @@ class ModelEvaluator:
         with torch.inference_mode():
             with torch.autocast(
                 device_type=self.config.device.type,
-                enabled=use_amp and self.config.device.type == "cuda"
+                enabled=use_amp and self.config.device.type == "cuda",
             ):
                 return self.model(images)
+
+

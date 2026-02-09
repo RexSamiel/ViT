@@ -1,3 +1,5 @@
+"""Shared formatting, display functions, and model registry."""
+
 SUPPORTED_MODELS: dict[str, str] = {
     # ViT models
     "vit_tiny": "vit_tiny_patch16_224",
@@ -53,8 +55,34 @@ BEiT:
   - beit_large
 
 ============================================================
-Usage: python runner.py --model <model_name> [options]
-Example: python runner.py --model vit_base --faultfree --metrics
+Usage: python -m src.main --model <model_name> <mode> [mode-options]
+
+Examples:
+  Fault injection (baseline):
+    python -m src.main --model vit_base fi --condition faultfree
+
+  Fault injection (faulty with 10 runs):
+    python -m src.main --model vit_base fi --condition faulty --repeat 10
+
+  Activation analysis:
+    python -m src.main --model vit_base aa --sampling 1.0
 ============================================================
 """)
 
+
+def format_count(n: int) -> str:
+    """Format large numbers with K/M/B suffixes.
+
+    Args:
+        n: Number to format
+
+    Returns:
+        Formatted string
+    """
+    if n >= 1_000_000_000:
+        return f"{n / 1_000_000_000:.2f}B"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
