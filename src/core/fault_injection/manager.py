@@ -46,7 +46,9 @@ class FaultInjection:
                 outputs.size(0),
                 runner.config.device,
             )
-            faulty_aligned, faultfree_aligned = AccuracyTracker.align_batch_sizes(outputs, ff_batch)
+            faulty_aligned, faultfree_aligned = AccuracyTracker.align_batch_sizes(
+                outputs, ff_batch
+            )
             self.sdc.update_batch(faulty_aligned, faultfree_aligned)
 
     def get_results(
@@ -85,7 +87,11 @@ class FaultInjection:
         )
 
         if "logit_sdc_rate" in results:
-            msdc = f"\n  MSDC Average:            {results['msdc_avg']:.6f}" if not math.isnan(results["msdc_avg"]) else ""
+            msdc = (
+                f"\n  MSDC Average:            {results['msdc_avg']:.6f}"
+                if not math.isnan(results["msdc_avg"])
+                else ""
+            )
             print(
                 f"\nSDC Metrics:\n"
                 f"  Logit SDC Rate:          {results['logit_sdc_rate']:.2f}%"
@@ -114,9 +120,9 @@ class FaultInjection:
     def print_summary(self, n_runs: int, total_runtime: float) -> None:
         """Print full multi-run summary."""
         print(
-            f"\n{'=' * 60}\n"
+            f"\n{'*' * 60}\n"
             f" SUMMARY: {n_runs} runs completed in {total_runtime:.2f}s\n"
-            f"{'=' * 60}\n"
+            f"{'*' * 60}\n"
         )
         self.accuracy.print_summary()
         print()
@@ -159,7 +165,6 @@ def run_single(
         if verbose:
             print(Injector.format_fault_info(fault_info))
 
-    # Run evaluation
     batches = runner.get_batches()
     compute_sdc = mode == "faulty" and runner.ff_logits.available
     logits_buffer, labels_buffer = [], []
@@ -212,7 +217,7 @@ def run_multiple(
 
     for i in range(n_runs):
         if verbose and show_info:
-            print(f"\n{'=' * 60}\n Run {i + 1}/{n_runs}\n{'=' * 60}")
+            print(f"Run {i + 1}/{n_runs}\n{'-' * 60}")
 
         results = run_single(
             runner,
@@ -231,14 +236,9 @@ def run_multiple(
     return fi.get_summary(total_runtime)
 
 
-# =====================================================
-# File I/O functions
-# =====================================================
-
-
 def load_base_accuracy(model_key: str) -> dict | None:
     """Load base accuracy from faultfree run if available."""
-    base_path = f"results/base_accuracy/{model_key}.json"
+    base_path = f"results/graphing/base_accuracy/{model_key}.json"
     if os.path.exists(base_path):
         try:
             with open(base_path, "r") as f:
@@ -250,8 +250,8 @@ def load_base_accuracy(model_key: str) -> dict | None:
 
 def save_base_accuracy(model_key: str, results: dict) -> None:
     """Save base accuracy from faultfree run."""
-    os.makedirs("results/base_accuracy", exist_ok=True)
-    path = f"results/base_accuracy/{model_key}.json"
+    os.makedirs("results/graphing/base_accuracy", exist_ok=True)
+    path = f"results/graphing/base_accuracy/{model_key}.json"
 
     base_acc = {
         "top1": results.get("top1_acc", 0.0),
@@ -275,14 +275,16 @@ def save_summary(
     base_accuracy: dict = None,
     seed: int = None,
     total_blocks: int = None,
+    output_dir: str = None,
 ) -> None:
     """Save experiment summary to JSON."""
-    os.makedirs("results/new_runs", exist_ok=True)
+    output_dir = output_dir or "results/data/new_runs"
+    os.makedirs(output_dir, exist_ok=True)
 
     date_str = datetime.datetime.now().strftime("%Y%m%d")
     samples = config.batch_size * (config.max_batches or 500)
     filename = f"{model_key}_{mode}_{samples}samples_{date_str}.json"
-    path = f"results/new_runs/{filename}"
+    path = f"{output_dir}/{filename}"
 
     existing = []
     if os.path.exists(path):

@@ -221,3 +221,38 @@ def collect_classifier_params(model) -> list[tuple[str, Any]]:
         for name, param in model.head.named_parameters():
             available.append((f"head.{name}", param))
     return available
+
+
+def get_tensor(
+    layer_name: str, model: torch.nn.Module, x: torch.Tensor
+) -> Optional[torch.Tensor]:
+    """
+    Runs the model on input x and returns the tensor from the layer named layer_name.
+
+    Example layer_name:
+        'blocks.0.attn.qkv'
+        'blocks.5.mlp.fc1'
+    """
+    tensor_holder = {}
+
+    def find_submodule(module, name):
+        names = name.split(".")
+        sub = module
+        for n in names:
+            if hasattr(sub, n):
+                sub = getattr(sub, n)
+            else:
+                raise ValueError(f"Module has no submodule '{n}' in path '{name}'")
+        return sub
+
+    def hook_fn(module, input, output):
+        tensor_holder["output"] = output
+
+    submodule = find_submodule(model, layer_name)
+    handle = submodule.register_forward_hook(hook_fn)
+
+    _ = model(x)
+
+    handle.remove()
+
+    return tensor_holder.get("output")

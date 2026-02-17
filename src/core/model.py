@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 import timm
 from timm.data.config import resolve_data_config
 from timm.data.transforms_factory import create_transform
+from typing import Optional
 
 from src.config.settings import Config
 from src.core.library.imagenet_loader import ImageNetValDataset
@@ -37,7 +38,6 @@ class ModelRunner:
         )
         model.eval()
 
-        # Warm-up pass to compile CUDA kernels
         if self.config.device.type == "cuda":
             dummy = torch.randn(1, 3, 224, 224, device=self.config.device)
             with torch.inference_mode():
@@ -46,9 +46,6 @@ class ModelRunner:
             torch.cuda.empty_cache()
 
         if self.verbose:
-            print(f"Model loaded on {self.config.device}")
-
-        return model
 
     def _get_transform(self):
         """Get appropriate transform for the model."""
@@ -116,7 +113,7 @@ class ModelRunner:
         """Get cached batches for evaluation."""
         return self.cached_batches(
             self.config.batch_size,
-            self.device,  # Use stored device, not property (avoids new object creation)
+            self.device,
             self.config.max_batches,
         )
 
@@ -128,5 +125,3 @@ class ModelRunner:
                 enabled=use_amp and self.config.device.type == "cuda",
             ):
                 return self.model(images)
-
-

@@ -2,10 +2,10 @@
 
 from src.core.model import ModelRunner
 from src.core.fault_injection import FaultInjection
-from src.core.activation import ActivationAnalyzer
+from src.core.parameter_analysis import ParameterAnalyzer
 
 __all__ = [
     "ModelRunner",
     "FaultInjection",
-    "ActivationAnalyzer",
+    "ParameterAnalyzer",
 ]
