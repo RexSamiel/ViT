@@ -17,8 +17,6 @@ venv/
 
 # Project specific
 logits/
-results/new_runs
-results/
 logs/
 *.pt
 run.sh
@@ -26,6 +24,8 @@ run.sh
 setting.py
 .onnx
 .png
+results/*
+!results/*.py
 
 # Claude
 .claude/
@@ -34,4 +34,4 @@ setting.py
 cache*/
 .cache/
 
-
+.hypothesis/

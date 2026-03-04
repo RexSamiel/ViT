@@ -13,7 +13,7 @@ torch.onnx.export(
     opset_version=17,
     input_names=["input"],
     output_names=["output"],
-    dynamo=False,  # IMPORTANT: forces stable legacy exporter
+    dynamo=False,
 )
 
 print("Exported vit_tiny.onnx successfully")

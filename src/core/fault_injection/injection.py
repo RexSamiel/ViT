@@ -37,15 +37,17 @@ class Injector:
         """Generate a random index into a parameter tensor.
 
         Args:
-            param: Parameter tensor
+            param: Parameter tensor.
 
         Returns:
-            Tuple of indices, one per dimension
+            Tuple of indices, one per dimension.
         """
         return tuple(random.randint(0, s - 1) for s in param.shape)
 
     @staticmethod
-    def inject_at_param(param: torch.Tensor, idx: tuple, corrupted_value: torch.Tensor) -> torch.Tensor:
+    def inject_at_param(
+        param: torch.Tensor, idx: tuple, corrupted_value: torch.Tensor
+    ) -> torch.Tensor:
         """Write a corrupted value into a parameter tensor at the given index.
 
         Args:
@@ -72,7 +74,11 @@ class Injector:
             Formatted multi-line string
         """
         sep = "=" * 60
-        sub = f"Sub-component:  {info['sub_component']}\n" if info.get("sub_component") else ""
+        sub = (
+            f"Sub-component:  {info['sub_component']}\n"
+            if info.get("sub_component")
+            else ""
+        )
         return (
             f"{sep}\n"
             f"FAULT INJECTION\n"
@@ -120,7 +126,6 @@ class Injector:
                 f"(model has {total_blocks} blocks, indices 0-{total_blocks - 1})"
             )
 
-        # Resolve "all" to a random component type
         if component_type == "all":
             component_type = random.choice(
                 ["attention", "mlp", "norm", "patch_embed", "classifier"]
@@ -164,11 +169,12 @@ class Injector:
         and stores fault info for later restoration.
 
         Args:
-            model: The neural network model
-            fault_params: Dict with component, sub_component, block_idx, idx, bit_range
+            model: The neural network model.
+            fault_params: Dict with component, sub_component, block_idx, idx,
+                bit_range keys.
 
         Returns:
-            fault_info dictionary with all fault details
+            fault_info dictionary with all fault details.
         """
         params, comp, sub = self.collect_target_params(
             model,

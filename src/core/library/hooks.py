@@ -8,20 +8,6 @@ from src.core.library.layers import extract_block_idx, classify_component
 
 
 class HookManager:
-    """Manages forward hook lifecycle: registration, activation dispatch, and cleanup.
-
-    Registers hooks on all non-root modules of a model. Each hook captures the
-    module output, classifies it by component type (input/output/block/mha/mlp),
-    and dispatches it to a user-provided callback.
-
-    The callback signature is:
-        callback(tensor, name, module_type, component, block_idx) -> None
-
-    Tracks max_block_seen per forward pass to correctly classify pre-block modules
-    as "input" and post-block modules as "output". Call reset_block_tracking()
-    between batches.
-    """
-
     def __init__(self):
         self._handles: list = []
         self._max_block_seen: int = -1

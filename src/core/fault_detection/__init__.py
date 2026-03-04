@@ -1,39 +1,33 @@
-"""Fault detection - detection neuron approach for runtime fault detection."""
+"""Fault detection module."""
 
+from src.core.fault_detection.manager import FaultDetector
+from src.core.fault_detection.injection import Injector
 from src.core.fault_detection.neuron import (
-    DetectorNeurons,
-    get_qkv_layer,
-    get_proj_layer,
-    get_fc1_layer,
-    get_fc2_layer,
+    NeuroChecker,
+    ChecksumChecker,
+    LinearChecker,
 )
-from src.core.fault_detection.baseline import DetectionBaseline
-from src.core.fault_detection.tracker import DetectionTracker
-from src.core.fault_detection.manager import (
-    add_detection,
-    remove_detection,
-    update_tracker,
-    capture_baselines,
-    detect_faults,
-    print_results,
+from src.core.fault_detection.save_and_load import (
+    NeuroWeights,
+    ChecksumWeights,
+    compute_neuro_weights,
+    compute_checksum_weights,
+    save_checker_weights,
+    load_checker_weights,
+    get_or_compute_checker_weights,
 )
 
 __all__ = [
-    # neuron.py
-    "DetectorNeurons",
-    "get_qkv_layer",
-    "get_proj_layer",
-    "get_fc1_layer",
-    "get_fc2_layer",
-    # baseline.py
-    "DetectionBaseline",
-    # tracker.py
-    "DetectionTracker",
-    # manager.py
-    "add_detection",
-    "remove_detection",
-    "update_tracker",
-    "capture_baselines",
-    "detect_faults",
-    "print_results",
+    "FaultDetector",
+    "Injector",
+    "NeuroChecker",
+    "ChecksumChecker",
+    "LinearChecker",
+    "NeuroWeights",
+    "ChecksumWeights",
+    "compute_neuro_weights",
+    "compute_checksum_weights",
+    "save_checker_weights",
+    "load_checker_weights",
+    "get_or_compute_checker_weights",
 ]

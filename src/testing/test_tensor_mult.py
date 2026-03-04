@@ -1,6 +1,6 @@
 import torch
 
-X = torch.ones(2, 3, 3)
+X = torch.ones(2, 2, 3)
 W = torch.ones(2, 3, 3)
 
 W[1, 1, 1] = 30.0

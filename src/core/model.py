@@ -31,7 +31,8 @@ class ModelRunner:
             print(f"Loading model: {self.config.model_name}")
 
         if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
 
         model = timm.create_model(self.config.model_name, pretrained=True).to(
             self.config.device
@@ -45,7 +46,7 @@ class ModelRunner:
             del dummy
             torch.cuda.empty_cache()
 
-        if self.verbose:
+        return model
 
     def _get_transform(self):
         """Get appropriate transform for the model."""
@@ -63,6 +64,7 @@ class ModelRunner:
                     ),
                 ]
             )
+        print(f"Model loaded with default set tranformation")
 
     def _create_dataloader(self) -> DataLoader:
         """Create validation dataloader."""

@@ -1,5 +1,3 @@
-"""Unified parameter analysis - combines activation and weight analysis."""
-
 import datetime
 import json
 import os
@@ -51,12 +49,10 @@ class ParameterAnalyzer:
             max(0.01, min(100.0, sampling_percent)) if analysis_type == "aa" else 100.0
         )
 
-        # Initialize unified collector
         self.collector = DataCollector(self.analysis_type, self.sampling_percent)
 
         self.components = self.collector.get_components()
 
-        # Get histogram configuration for this analysis type
         self.bin_range, self.bin_resolution, self.num_bins = get_histogram_config(
             analysis_type
         )
@@ -222,23 +218,19 @@ class ParameterAnalyzer:
             "num_blocks": self.num_blocks,
         }
 
-        # Add component counts
         for comp in self.components:
             if comp != "all":
                 key = f"num_{comp}_items"
                 statistics[key] = comp_counts[comp]
 
-        # Add type-specific statistics
         if self.analysis_type == "aa":
             statistics["total_samples"] = self.collector.total_samples
             statistics["total_batches"] = self.collector.total_batches
             statistics["sampling_percent"] = self.sampling_percent
 
-        # Build element counts
         total_elements = sum(c["total"] for c in self._element_counts.values())
         total_sampled = sum(c["sampled"] for c in self._element_counts.values())
 
-        # For weights, exclude "all" from total to avoid double-counting
         if self.analysis_type == "wa":
             total_elements = sum(
                 c["total"] for comp, c in self._element_counts.items() if comp != "all"

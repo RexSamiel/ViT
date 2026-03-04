@@ -1,7 +1,7 @@
-"""Layer discovery, classification, model structure queries, and parameter collection."""
-
 import re
 from typing import Any
+import torch.nn as nn
+from typing import Dict
 
 
 def extract_block_idx(name: str) -> int | None:
@@ -75,13 +75,28 @@ def is_excluded(
 
 
 def get_num_blocks(model) -> int:
-    """Get total number of transformer blocks in the model."""
+    """
+    Get the total number of transformer blocks in a model.
+    Works with timm ViT Tiny and Swin variants.
+    """
     if hasattr(model, "blocks"):
         return len(model.blocks)
+
+    elif hasattr(model, "transformer"):
+        return len(model.transformer)
+
     elif hasattr(model, "layers"):
-        return sum(len(layer.blocks) for layer in model.layers)
-    else:
-        raise ValueError("Model does not have blocks or layers[].blocks")
+        count = 0
+        for layer in model.layers:
+            if hasattr(layer, "blocks"):
+                count += len(layer.blocks)
+            else:
+                count += 1
+        return count
+
+    raise ValueError(
+        "Model does not have blocks, layers[].blocks, or transformer attribute"
+    )
 
 
 def get_block(model, block_idx):
@@ -223,36 +238,19 @@ def collect_classifier_params(model) -> list[tuple[str, Any]]:
     return available
 
 
-def get_tensor(
-    layer_name: str, model: torch.nn.Module, x: torch.Tensor
-) -> Optional[torch.Tensor]:
+def get_linear_layers(model: nn.Module) -> Dict[str, nn.Linear]:
     """
-    Runs the model on input x and returns the tensor from the layer named layer_name.
+    Find all linear layers in a PyTorch model with their hierarchical names.
 
-    Example layer_name:
-        'blocks.0.attn.qkv'
-        'blocks.5.mlp.fc1'
+    Args:
+        model: The PyTorch model (e.g., a timm ViT model)
+
+    Returns:
+        Dict mapping layer names to Linear layer objects
+        Example: {'blocks.0.attn.qkv': Linear(192, 576), ...}
     """
-    tensor_holder = {}
-
-    def find_submodule(module, name):
-        names = name.split(".")
-        sub = module
-        for n in names:
-            if hasattr(sub, n):
-                sub = getattr(sub, n)
-            else:
-                raise ValueError(f"Module has no submodule '{n}' in path '{name}'")
-        return sub
-
-    def hook_fn(module, input, output):
-        tensor_holder["output"] = output
-
-    submodule = find_submodule(model, layer_name)
-    handle = submodule.register_forward_hook(hook_fn)
-
-    _ = model(x)
-
-    handle.remove()
-
-    return tensor_holder.get("output")
+    return {
+        name: module
+        for name, module in model.named_modules()
+        if isinstance(module, nn.Linear) and name
+    }

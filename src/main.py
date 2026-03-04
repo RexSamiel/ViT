@@ -1,13 +1,9 @@
-"""Main entry point for Vision Transformer Fault Injection Framework."""
-
 import argparse
 import random
 
 from src.config.settings import Config
 from src.core.model import ModelRunner
-from src.core import parameter_analysis, fault_injection
-from src.core import fault_detection
-from src.core.fault_detection.tracker import DetectionTracker
+from src.core import parameter_analysis, fault_injection, fault_detection
 from src.core.library.layers import get_num_blocks
 from src.core.library.ui import SUPPORTED_MODELS, print_supported_models
 from src.core.library.utils import set_seed, str_to_bool, int_or_none, parse_bit_range
@@ -15,7 +11,6 @@ from src.core.library.utils import set_seed, str_to_bool, int_or_none, parse_bit
 
 def parse_args():
     """Parse command line arguments with mode-specific subparsers."""
-    # Main parser with shared arguments
     parser = argparse.ArgumentParser(
         description="""Vision Transformer Fault Injection & Analysis Framework
 
@@ -86,9 +81,7 @@ Workflow:
   3. Use --repeat N for statistical significance
 
 Detection:
-  Add --detection <type> to monitor layer input sums during the run.
-  On a faultfree run the baseline is captured and saved.
-  On a faulty run the current values are compared against the saved baseline.
+  Add --detection <type> to enable fault detection on the specified layer type(s).
   --detection choices: none, qkv, proj, fc1, fc2, all  (default: none)
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -154,24 +147,15 @@ Detection:
         type=str,
         default="none",
         choices=["none", "qkv", "proj", "fc1", "fc2", "all"],
-        help=(
-            "Enable fault detection on the specified layer type(s). "
-            "On a faultfree run the baseline is saved; on a faulty run the "
-            "baseline is loaded and results are compared. (default: none)"
-        ),
+        help=("Enable fault detection on the specified layer type(s). (default: none)"),
     )
     fi_parser.add_argument(
         "--threshold",
         type=float,
         default=0.1,
-        help=(
-            "Relative difference threshold for fault detection. "
-            "A layer is flagged when |current - baseline| / |baseline| exceeds "
-            "this value. (default: 0.1)"
-        ),
+        help=("Relative difference threshold for fault detection. (default: 0.1)"),
     )
 
-    # Parameter Analysis mode
     pa_parser = subparsers.add_parser(
         "pa",
         help="Parameter analysis mode",
@@ -205,20 +189,98 @@ Types:
         help="Print per-parameter/layer details (default: false)",
     )
 
+    fd_parser = subparsers.add_parser(
+        "fd",
+        help="Fault detection mode",
+        description="""Fault Detection Mode
+
+Test fault detection using checker neurons. Wraps linear layers with
+extra neurons that compute expected average outputs based on precomputed
+average weights. Compares checker neuron output with actual output average
+to detect faults.
+
+Workflow:
+  1. Run without injection first to see baseline detection values
+  2. Run with --inject to inject a fault and see if detection catches it
+  3. Adjust --threshold to tune detection sensitivity
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    fd_parser.add_argument(
+        "--inject",
+        type=str,
+        default="false",
+        help="Inject a fault before running detection (default: false)",
+    )
+    fd_parser.add_argument(
+        "--layer_filter",
+        type=str,
+        default="all",
+        choices=["all", "qkv", "proj", "fc1", "fc2"],
+        help="Which layers to apply detection to (default: all)",
+    )
+    fd_parser.add_argument(
+        "--threshold",
+        type=float,
+        default=1e-3,
+        help="Difference threshold for fault detection (default: 1e-3)",
+    )
+    fd_parser.add_argument(
+        "--bit_range",
+        type=str,
+        default=None,
+        help="Bit range to target for injection (e.g., '0,7' or '24,31')",
+    )
+    fd_parser.add_argument(
+        "--fault_count",
+        type=int,
+        default=1,
+        help="Number of faults to inject (default: 1)",
+    )
+    fd_parser.add_argument(
+        "--method",
+        type=str,
+        default="neuro",
+        choices=["neuro", "checksum"],
+        help="Detection method: neuro (mean-based) or checksum (sum-based ABFT) (default: neuro)",
+    )
+    fd_parser.add_argument(
+        "--detailed",
+        type=str,
+        default="false",
+        help="Show per-row/col diffs for checksum method (default: false)",
+    )
+    fd_parser.add_argument(
+        "--relative",
+        type=str,
+        default="false",
+        help="Use relative difference for threshold (default: false)",
+    )
+    fd_parser.add_argument(
+        "--load_weights",
+        type=str,
+        default="true",
+        help="Load pre-saved checker weights from disk (default: true)",
+    )
+    fd_parser.add_argument(
+        "--recompute",
+        type=str,
+        default="false",
+        help="Force recompute weights even if cached (default: false)",
+    )
+
     return parser.parse_args()
 
 
 def run_fault_injection(
-    args, runner: ModelRunner, verbose: bool, show_info: bool, seed: int, output_dir: str
+    args,
+    runner: ModelRunner,
+    verbose: bool,
+    show_info: bool,
+    seed: int,
+    output_dir: str,
 ) -> None:
-    """Run fault injection workflow, optionally with integrated fault detection.
-
-    Steps:
-      1. If detection is enabled, set up detection neurons on the model
-      2. If faulty mode, load baseline accuracy for comparison
-      3. Execute single or multiple runs (detection values are captured inline)
-      4. On faultfree + detection: save captured baseline values to disk
-      5. On faulty + detection: compare against saved baseline and print table
+    """Run fault injection workflow.
 
     Args:
         args: Parsed command line arguments
@@ -244,27 +306,13 @@ def run_fault_injection(
 
     total_blocks = get_num_blocks(runner.model)
 
-    # --- Detection setup (faultfree: capture baseline inline) ---
-    # For a faultfree run with detection we let the existing run_single loop
-    # handle the forward passes, but we attach hooks beforehand and peel off
-    # detection values afterwards.  For a faulty run we attach hooks so that
-    # detection happens in the same forward pass as fault injection.
-
-    detection_neurons: dict = {}
-    detection_tracker: DetectionTracker | None = None
-
     if use_detection:
-        detection_neurons = fault_detection.add_detection(
-            runner.model, detection, total_blocks
-        )
-        detection_tracker = DetectionTracker(threshold=threshold)
         if verbose:
             print(
-                f"Detection enabled: monitoring {len(detection_neurons)} layers "
-                f"(type={detection}, threshold={threshold})"
+                f"Detection requested: type={detection}, threshold={threshold} "
+                f"(NOT IMPLEMENTED - implement in fault_detection module)"
             )
 
-    # Load baseline accuracy if running faulty mode
     base_accuracy = None
     if args.condition == "faulty":
         base_accuracy = fault_injection.load_base_accuracy(args.model)
@@ -274,41 +322,22 @@ def run_fault_injection(
                 f"Top-5={base_accuracy['top5']:.2f}%"
             )
 
-    # --- Inference runs ---
     if args.repeat <= 1:
-        # Single run — run_single executes the forward loop internally.
-        # We need access to the per-batch hook values so we wrap the loop here
-        # when detection is active rather than delegating to run_single.
-        if use_detection:
-            results = _run_single_with_detection(
-                runner,
-                args.condition,
-                save_logits,
-                fault_params if args.condition == "faulty" else None,
-                detection_neurons,
-                detection_tracker,
-                verbose,
-            )
-        else:
-            results = fault_injection.run_single(
-                runner,
-                mode=args.condition,
-                save_logits=save_logits,
-                fault_params=fault_params if args.condition == "faulty" else None,
-                verbose=verbose,
-            )
+        results = fault_injection.run_single(
+            runner,
+            mode=args.condition,
+            save_logits=save_logits,
+            fault_params=fault_params if args.condition == "faulty" else None,
+            verbose=verbose,
+        )
 
         if args.condition == "faultfree":
             fault_injection.save_base_accuracy(args.model, results)
     else:
-        # Multiple runs — detection on multi-run uses the last run's tracker
-        # to show a representative comparison.  We accumulate across all runs.
-        summary = _run_multiple_with_detection(
+        summary = fault_injection.run_multiple(
             runner,
             args.repeat,
             fault_params,
-            detection_neurons if use_detection else {},
-            detection_tracker,
             verbose=verbose,
             show_info=show_info,
         )
@@ -324,224 +353,11 @@ def run_fault_injection(
             output_dir=output_dir,
         )
 
-    # --- Post-run detection processing ---
-    if use_detection:
-        fault_detection.remove_detection(detection_neurons)
 
-        if args.condition == "faultfree":
-            # Save the baseline means captured during this run.
-            _save_detection_baseline(
-                detection_tracker, detection, args.model, verbose
-            )
-        else:
-            # Compare against saved baseline and print results.
-            results = fault_detection.detect_faults(
-                runner,
-                detection=detection,
-                model_key=args.model,
-                threshold=threshold,
-                current_tracker=detection_tracker,
-                verbose=verbose,
-            )
-            fault_detection.print_results(results, threshold)
-
-
-# ---------------------------------------------------------------------------
-# Detection-aware single-run wrapper
-# ---------------------------------------------------------------------------
-
-
-def _run_single_with_detection(
-    runner: ModelRunner,
-    mode: str,
-    save_logits: bool,
-    fault_params: dict | None,
-    detection_neurons: dict,
-    detection_tracker: DetectionTracker,
-    verbose: bool,
-) -> dict:
-    """Execute one evaluation pass with detection hooks already attached.
-
-    Replicates the core logic of :func:`fault_injection.run_single` but calls
-    :func:`fault_detection.update_tracker` after every batch so that detection
-    values are captured in the same forward pass as the accuracy metrics.
-
-    Args:
-        runner: ModelRunner instance.
-        mode: "faultfree" or "faulty".
-        save_logits: Whether to buffer logits for saving.
-        fault_params: Fault injection parameters dict (faulty mode only).
-        detection_neurons: Active detection neuron dict.
-        detection_tracker: Tracker accumulating detection values.
-        verbose: Print progress.
-
-    Returns:
-        Results dict from the fault injection run.
-    """
-    from src.core.fault_injection.manager import FaultInjection
-    from src.core.fault_injection.injection import Injector
-    from src.core.fault_injection.accuracy import AccuracyTracker
-    import time
-    import torch
-    from src.core.library.utils import resolve_amp
-
-    fi = FaultInjection()
-    use_amp = resolve_amp(runner.config)
-
-    fi.injector.restore()
-    fi.reset()
-
-    fault_info = None
-    if mode == "faulty" and fault_params:
-        fault_info = fi.injector.inject(runner.model, fault_params)
-        if verbose:
-            print(Injector.format_fault_info(fault_info))
-
-    batches = runner.get_batches()
-    compute_sdc = mode == "faulty" and runner.ff_logits.available
-    logits_buffer, labels_buffer = [], []
-
-    start_time = time.perf_counter()
-
-    with torch.inference_mode():
-        for batch_idx, (images, labels) in enumerate(batches):
-            outputs = runner.inference(images, use_amp)
-            fi.process_batch(outputs, labels, batch_idx, runner, compute_sdc)
-
-            # Capture detection values from this batch.
-            fault_detection.update_tracker(detection_neurons, detection_tracker)
-
-            if save_logits:
-                logits_buffer.append(outputs.cpu())
-                labels_buffer.append(labels.cpu())
-
-    runtime = time.perf_counter() - start_time
-
-    if save_logits and logits_buffer:
-        runner.ff_logits.save(logits_buffer, labels_buffer)
-
-    results = fi.get_results(compute_sdc, fault_info, runtime, mode)
-
-    if verbose:
-        fi.print_run_results(results, runtime, runner.config.model_name)
-
-    return results
-
-
-def _run_multiple_with_detection(
-    runner: ModelRunner,
-    n_runs: int,
-    fault_params: dict,
-    detection_neurons: dict,
-    detection_tracker: DetectionTracker | None,
-    verbose: bool,
-    show_info: bool,
-) -> dict:
-    """Execute multiple fault-injection runs, accumulating detection across all.
-
-    Detection values are accumulated across all runs so the tracker reflects
-    the average behaviour over all injected-fault scenarios.
-
-    Args:
-        runner: ModelRunner instance.
-        n_runs: Number of runs.
-        fault_params: Fault injection parameters dict.
-        detection_neurons: Active detection neurons (may be empty dict).
-        detection_tracker: Tracker to accumulate into (may be None).
-        verbose: Print summary.
-        show_info: Print per-run info.
-
-    Returns:
-        Aggregated summary dict.
-    """
-    use_detection = bool(detection_neurons) and detection_tracker is not None
-
-    if not use_detection:
-        # Fast path: no detection overhead.
-        return fault_injection.run_multiple(
-            runner,
-            n_runs,
-            fault_params,
-            verbose=verbose,
-            show_info=show_info,
-        )
-
-    from src.core.fault_injection.manager import FaultInjection
-    import time
-
-    fi = FaultInjection()
-    total_start = time.perf_counter()
-
-    for i in range(n_runs):
-        if verbose and show_info:
-            print(f"Run {i + 1}/{n_runs}\n{'-' * 60}")
-
-        results = _run_single_with_detection(
-            runner,
-            mode="faulty",
-            save_logits=False,
-            fault_params=fault_params,
-            detection_neurons=detection_neurons,
-            detection_tracker=detection_tracker,
-            verbose=show_info,
-        )
-        fi.aggregate_run(results)
-
-    total_runtime = time.perf_counter() - total_start
-
-    if verbose:
-        fi.print_summary(n_runs, total_runtime)
-
-    return fi.get_summary(total_runtime)
-
-
-# ---------------------------------------------------------------------------
-# Baseline persistence helper
-# ---------------------------------------------------------------------------
-
-
-def _save_detection_baseline(
-    tracker: DetectionTracker,
-    detection: str,
-    model_key: str,
-    verbose: bool,
+def run_parameter_analysis(
+    args, runner: ModelRunner, verbose: bool, output_dir: str
 ) -> None:
-    """Persist per-layer detection means (sum, avg, min) via DetectionBaseline.
-
-    Args:
-        tracker: Populated tracker from a faultfree run.
-        detection: Detection config string used as part of the filename.
-        model_key: Model identifier.
-        verbose: Print confirmation.
-    """
-    from src.core.fault_detection.baseline import DetectionBaseline
-
-    means = tracker.get_means()
-    if not means:
-        if verbose:
-            print("No detection values captured; baseline not saved.")
-        return
-
-    # means is already dict[str, dict[str, float]] - pass directly.
-    baseline = DetectionBaseline(model_key=model_key, detection=detection)
-    baseline.save(means)
-
-    if verbose:
-        print(f"Detection baseline saved ({len(means)} layers).")
-
-
-# ---------------------------------------------------------------------------
-# Parameter analysis workflow
-# ---------------------------------------------------------------------------
-
-
-def run_parameter_analysis(args, runner: ModelRunner, verbose: bool, output_dir: str) -> None:
     """Run parameter analysis workflow.
-
-    Steps:
-      1. Run activation or weight analysis based on --type
-      2. Print details if requested
-      3. Save results
 
     Args:
         args: Parsed command line arguments
@@ -561,25 +377,66 @@ def run_parameter_analysis(args, runner: ModelRunner, verbose: bool, output_dir:
     if show_details:
         analyzer.print_details()
 
-    parameter_analysis.save_results(results, runner.config, args.model, args.type, output_dir)
+    parameter_analysis.save_results(
+        results, runner.config, args.model, args.type, output_dir
+    )
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+def run_fault_detection(args, runner: ModelRunner, verbose: bool) -> None:
+    """Run fault detection workflow."""
+    import torch
+
+    do_inject = str_to_bool(args.inject)
+    layer_filter = args.layer_filter
+    bit_range = parse_bit_range(args.bit_range)
+    threshold = args.threshold
+    fault_count = args.fault_count
+    method = args.method
+    detailed = str_to_bool(args.detailed)
+    relative = str_to_bool(args.relative)
+    load_weights = str_to_bool(args.load_weights)
+    recompute = str_to_bool(args.recompute)
+
+    # Create detector with method and threshold
+    detector = fault_detection.FaultDetector(
+        runner.model, method=method, threshold=threshold
+    )
+
+    # Load pre-saved weights (computes and saves if not cached)
+    if load_weights:
+        detector.load_weights(args.model, force_recompute=recompute)
+
+    detector.apply(layer_filter)
+
+    # Get data
+    batches = runner.get_batches()
+    if not batches:
+        print("No batches available")
+        return
+
+    images, _ = batches[0]
+
+    # Inject faults if requested
+    injector = None
+    if do_inject:
+        injector = fault_detection.Injector()
+        injector.inject(runner.model, layer_filter, bit_range, count=fault_count)
+        injector.print_info()
+
+    # Run inference
+    with torch.inference_mode():
+        _ = runner.model(images)
+
+    # Print results
+    detector.print_values(detailed=detailed, relative=relative)
+
+    # Cleanup
+    if injector:
+        injector.restore()
+    detector.remove()
 
 
 def main():
-    """Main entry point.
-
-    Workflow:
-      1. Parse arguments with mode-specific validation
-      2. Validate model selection
-      3. Configure settings (batch size, max batches)
-      4. Set reproducibility seed
-      5. Load model via ModelRunner
-      6. Route to selected mode workflow
-    """
     args = parse_args()
 
     if args.model not in SUPPORTED_MODELS:
@@ -611,6 +468,8 @@ def main():
         run_fault_injection(args, runner, verbose, show_info, seed, output_dir)
     elif args.mode == "pa":
         run_parameter_analysis(args, runner, verbose, output_dir)
+    elif args.mode == "fd":
+        run_fault_detection(args, runner, verbose)
 
 
 if __name__ == "__main__":

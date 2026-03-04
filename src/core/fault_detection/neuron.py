@@ -1,254 +1,207 @@
-"""Detector neurons via weight matrix extension.
-
-Adds detector rows to Linear layer weight matrices. PyTorch automatically
-computes detector outputs during the normal forward pass (matmul). A forward
-hook captures these values and strips them from the output so downstream
-layers see the original shape.
-
-How it works
-------------
-For a Linear layer with weight W of shape [out_features, in_features]:
-
-1. Append detector rows to W:
-   - sum_row = [1, 1, 1, ..., 1]       -> computes sum(input)
-   - avg_row = [1/n, 1/n, ..., 1/n]   -> computes mean(input)
-
-2. New weight W' has shape [out_features + 2, in_features]
-
-3. During forward pass:
-   - output' = input @ W'.T  (shape: [batch, seq, out_features + 2])
-   - Last 2 elements are detector outputs (computed by matmul, not separately!)
-
-4. Hook extracts detector values and returns stripped output to downstream
-
-5. ALSO captures sum/avg/min of the ORIGINAL output (first out_features elements)
-   to detect faults in the layer's own weights
-
-Detection capability
---------------------
-- **Input-based detectors** (from weight rows): Detect faults that propagate
-  FROM upstream layers (changes in input activations)
-- **Output-based detectors** (computed in hook): Detect faults IN this layer's
-  weights (changes in output activations)
-
-Both are captured and can be compared against fault-free baselines.
-"""
-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from pathlib import Path
 
 
-class DetectorNeurons:
-    """Adds detector rows to weight matrix and captures outputs via hook.
+CHECKER_WEIGHTS_DIR = Path(__file__).parent.parent.parent / "data" / "checker_weights"
 
-    The detector rows are incorporated into the normal matmul, so their
-    outputs are computed by PyTorch automatically. The hook:
-    1. Extracts detector values from the end of output tensor
-    2. Computes aggregates of the original output (for fault-in-layer detection)
-    3. Returns stripped output so downstream sees correct shape
 
-    Attributes:
-        target_layer: The monitored nn.Linear layer
-        original_weight: Saved copy for restoration
-        original_bias: Saved copy for restoration
-        original_out_features: Original output dimension
-        detection_values: Dict with captured values after each forward pass
-        hook_handle: Handle for cleanup
+class NeuroChecker(nn.Module):
+    """Linear layer with mean-based checker neuron."""
+
+    def __init__(
+        self,
+        original: nn.Linear,
+        checker_row: torch.Tensor | None = None,
+        checker_bias: torch.Tensor | None = None,
+    ):
+        super().__init__()
+        self.original = original
+        self.out_features = original.out_features
+
+        if checker_row is not None:
+            self.checker_row = (
+                checker_row.unsqueeze(0) if checker_row.dim() == 1 else checker_row
+            )
+        else:
+            self.checker_row = original.weight.data.mean(dim=0, keepdim=True).clone()
+
+        if checker_bias is not None:
+            self.checker_bias = (
+                checker_bias.unsqueeze(0) if checker_bias.dim() == 0 else checker_bias
+            )
+        elif original.bias is not None:
+            self.checker_bias = original.bias.data.mean().unsqueeze(0).clone()
+        else:
+            self.checker_bias = None
+
+        self.checker_val = 0.0
+        self.expected_val = 0.0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        extended_weight = torch.vstack([self.original.weight, self.checker_row])
+
+        if self.original.bias is not None and self.checker_bias is not None:
+            extended_bias = torch.cat([self.original.bias, self.checker_bias])
+        else:
+            extended_bias = None
+
+        extended_out = F.linear(x, extended_weight, extended_bias)
+
+        out = extended_out[..., : self.out_features]
+        checker_out = extended_out[..., self.out_features]
+
+        self.checker_val = checker_out.mean().item()
+        self.expected_val = out.mean(dim=-1).mean().item()
+
+        return out
+
+
+class ChecksumChecker(nn.Module):
+    """Classical matrix checksum ABFT for linear layer fault detection.
+
+    For y = x @ W.T + b, ABFT verifies:
+    - Output row checksum: y.sum(dim=-1) should equal x @ col_sums(W) + sum(b)
+    - Output col checksum: y.sum(dim=0) should equal row_sums(W) @ x.sum(dim=0) + b * batch_size
+
+    Weight sums are used to locate faults after detection.
     """
 
-    def __init__(self) -> None:
-        self.target_layer: nn.Linear | None = None
-        self.original_weight: torch.Tensor | None = None
-        self.original_bias: torch.Tensor | None = None
-        self.original_out_features: int | None = None
-        self.detection_values: dict[str, torch.Tensor] | None = None
-        self.hook_handle = None
+    def __init__(
+        self,
+        original: nn.Linear,
+        col_sums: torch.Tensor | None = None,
+        row_sums: torch.Tensor | None = None,
+        total_sum: torch.Tensor | None = None,
+        bias_sum: torch.Tensor | None = None,
+    ):
+        super().__init__()
+        self.original = original
+        self.out_features = original.out_features
+        self.in_features = original.in_features
 
-    def add_to_layer(self, layer: nn.Linear) -> None:
-        """Add detector rows to weight matrix and register output hook.
+        W = original.weight.data
 
-        Modifies the layer's weight tensor by appending 2 detector rows:
-        - Row 1: all ones (computes sum of input)
-        - Row 2: all 1/n (computes mean of input)
+        self.clean_col_sums = col_sums if col_sums is not None else W.sum(dim=0).clone()
+        self.clean_row_sums = row_sums if row_sums is not None else W.sum(dim=1).clone()
+        self.clean_total = total_sum if total_sum is not None else W.sum().clone()
 
-        Args:
-            layer: nn.Linear layer to monitor
-        """
-        if not isinstance(layer, nn.Linear):
-            raise TypeError(f"Expected nn.Linear, got {type(layer)}")
-
-        self.target_layer = layer
-
-        # Save originals for restoration
-        self.original_weight = layer.weight.data.clone()
-        self.original_out_features = layer.out_features
-        if layer.bias is not None:
-            self.original_bias = layer.bias.data.clone()
+        if bias_sum is not None:
+            self.clean_bias_sum = bias_sum
+        elif original.bias is not None:
+            self.clean_bias_sum = original.bias.data.sum().clone()
         else:
-            self.original_bias = None
+            self.clean_bias_sum = None
 
-        out_features, in_features = layer.weight.shape
-        device = layer.weight.device
-        dtype = layer.weight.dtype
+        self.output_checksum_diff = None
+        self.row_diffs = None
+        self.col_diffs = None
+        self.total_diff = None
+        self.bias_diff = None
 
-        # Create detector rows
-        # sum_row: dot(input, ones) = sum(input)
-        sum_row = torch.ones(1, in_features, device=device, dtype=dtype)
-        # avg_row: dot(input, ones/n) = mean(input)
-        avg_row = torch.ones(1, in_features, device=device, dtype=dtype) / in_features
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.linear(x, self.original.weight, self.original.bias)
+        self.original.forward(x)
 
-        # Append detector rows to weight matrix
-        # New shape: [out_features + 2, in_features]
-        new_weight = torch.cat([layer.weight.data, sum_row, avg_row], dim=0)
-        layer.weight = nn.Parameter(new_weight)
-        layer.out_features = out_features + 2
+        expected_row_sums = torch.matmul(x, self.clean_col_sums)
+        if self.clean_bias_sum is not None:
+            expected_row_sums = expected_row_sums + self.clean_bias_sum
 
-        # Extend bias with zeros for detector rows
-        if layer.bias is not None:
-            padding = torch.zeros(2, device=device, dtype=dtype)
-            new_bias = torch.cat([layer.bias.data, padding])
-            layer.bias = nn.Parameter(new_bias)
+        actual_row_sums = out.sum(dim=-1)
 
-        # Register hook to capture and strip detector values
-        self._register_hook()
+        checksum_diff = actual_row_sums - expected_row_sums
+        self.output_checksum_diff = checksum_diff.abs().max().item()
 
-    def _register_hook(self) -> None:
-        """Register forward hook that captures detector values and strips them."""
+        W = self.original.weight
+        current_col_sums = W.sum(dim=0)
+        current_row_sums = W.sum(dim=1)
 
-        # Store original out_features for slicing
-        orig_out = self.original_out_features
+        self.col_diffs = current_col_sums - self.clean_col_sums
+        self.row_diffs = current_row_sums - self.clean_row_sums
+        self.total_diff = (W.sum() - self.clean_total).item()
 
-        def capture_and_strip_hook(
-            module: nn.Module,
-            input: tuple[torch.Tensor, ...],
-            output: torch.Tensor,
-        ) -> torch.Tensor:
-            """Capture detector values and return stripped output.
+        if self.original.bias is not None and self.clean_bias_sum is not None:
+            self.bias_diff = (self.original.bias.sum() - self.clean_bias_sum).item()
+        else:
+            self.bias_diff = None
 
-            Args:
-                module: The layer
-                input: Tuple of inputs
-                output: Full output including detector values at end
-
-            Returns:
-                Output with detector values stripped (original shape)
-            """
-            # Output shape: [batch, seq, out_features + 2] or [batch, out_features + 2]
-
-            if output.dim() == 3:
-                # Transformer: [batch, seq_len, features]
-                # Original output (first orig_out features) - affected by weight faults
-                orig_output = output[:, :, :orig_out]
-                # Detector outputs (last 2 features) - computed from input
-                det_sum_input = output[:, :, -2].clone()  # sum(input) via weight row
-                det_avg_input = output[:, :, -1].clone()  # avg(input) via weight row
-
-                # Also compute aggregates of ORIGINAL output (detects faults in weights)
-                det_sum_output = orig_output.sum(dim=-1).clone()
-                det_avg_output = orig_output.mean(dim=-1).clone()
-                det_min_output = orig_output.min(dim=-1).values.clone()
-
-            elif output.dim() == 2:
-                # Standard FC: [batch, features]
-                orig_output = output[:, :orig_out]
-                det_sum_input = output[:, -2].clone()
-                det_avg_input = output[:, -1].clone()
-
-                det_sum_output = orig_output.sum(dim=-1).clone()
-                det_avg_output = orig_output.mean(dim=-1).clone()
-                det_min_output = orig_output.min(dim=-1).values.clone()
-            else:
-                # Fallback for other dimensions
-                orig_output = output[..., :orig_out]
-                det_sum_input = output[..., -2].clone()
-                det_avg_input = output[..., -1].clone()
-
-                det_sum_output = orig_output.sum(dim=-1).clone()
-                det_avg_output = orig_output.mean(dim=-1).clone()
-                det_min_output = orig_output.min(dim=-1).values.clone()
-
-            # Store all detection values
-            self.detection_values = {
-                # Input-based (from detector weight rows) - detects upstream faults
-                "sum_input": det_sum_input,
-                "avg_input": det_avg_input,
-                # Output-based (computed from original output) - detects faults in this layer
-                "sum": det_sum_output,
-                "avg": det_avg_output,
-                "min": det_min_output,
-            }
-
-            # Return stripped output so downstream sees original shape
-            return orig_output
-
-        self.hook_handle = self.target_layer.register_forward_hook(capture_and_strip_hook)
-
-    def get_detection_values(self) -> dict[str, torch.Tensor] | None:
-        """Return captured detector values.
-
-        Returns:
-            Dict with keys:
-            - "sum_input", "avg_input": From detector weight rows (detect upstream faults)
-            - "sum", "avg", "min": From original output (detect faults in this layer)
-            Returns None if no forward pass has occurred yet.
-        """
-        return self.detection_values
-
-    def is_active(self) -> bool:
-        """True when hook is registered and weights are modified."""
-        return self.hook_handle is not None
-
-    def remove(self) -> None:
-        """Remove hook and restore original weights exactly."""
-        # Remove hook first
-        if self.hook_handle is not None:
-            self.hook_handle.remove()
-            self.hook_handle = None
-
-        # Restore original weights
-        if self.target_layer is not None and self.original_weight is not None:
-            self.target_layer.weight = nn.Parameter(self.original_weight)
-            self.target_layer.out_features = self.original_out_features
-
-            if self.original_bias is not None:
-                self.target_layer.bias = nn.Parameter(self.original_bias)
-
-        # Clear all references
-        self.target_layer = None
-        self.original_weight = None
-        self.original_bias = None
-        self.original_out_features = None
-        self.detection_values = None
+        return out
 
 
-# ---------------------------------------------------------------------------
-# Layer accessor helpers
-# ---------------------------------------------------------------------------
+LinearChecker = NeuroChecker
+CheckerType = NeuroChecker | ChecksumChecker
 
 
-def get_qkv_layer(model, block_idx: int) -> nn.Linear:
-    """Get the QKV projection layer from a specific block."""
-    from src.core.library.layers import get_block
-    block = get_block(model, block_idx)
-    return block.attn.qkv
+def wrap_layer(
+    model: nn.Module,
+    name: str,
+    method: str = "neuro",
+    preloaded_weights: dict | None = None,
+) -> CheckerType:
+    """Replace a linear layer with a checker wrapper.
+
+    Args:
+        model: The model containing the layer
+        name: Dot-separated path to the layer
+        method: "neuro" for mean-based, "checksum" for sum-based ABFT
+        preloaded_weights: Optional dict with pre-computed weights for this layer
+    """
+    parts = name.split(".")
+    parent = model
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+
+    orig = getattr(parent, parts[-1])
+
+    if method == "checksum":
+        if preloaded_weights:
+            wrapped = ChecksumChecker(
+                orig,
+                col_sums=preloaded_weights.get("col_sums"),
+                row_sums=preloaded_weights.get("row_sums"),
+                total_sum=preloaded_weights.get("total_sum"),
+                bias_sum=preloaded_weights.get("bias_sum"),
+            )
+        else:
+            wrapped = ChecksumChecker(orig)
+    else:
+        if preloaded_weights:
+            wrapped = NeuroChecker(
+                orig,
+                checker_row=preloaded_weights.get("checker_row"),
+                checker_bias=preloaded_weights.get("checker_bias"),
+            )
+        else:
+            wrapped = NeuroChecker(orig)
+
+    setattr(parent, parts[-1], wrapped)
+    return wrapped
 
 
-def get_fc1_layer(model, block_idx: int) -> nn.Linear:
-    """Get the first MLP layer (fc1) from a specific block."""
-    from src.core.library.layers import get_block
-    block = get_block(model, block_idx)
-    return block.mlp.fc1
+def unwrap_layer(model: nn.Module, name: str):
+    """Restore original layer."""
+    parts = name.split(".")
+    parent = model
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+
+    wrapped = getattr(parent, parts[-1])
+    if isinstance(wrapped, (NeuroChecker, ChecksumChecker)):
+        setattr(parent, parts[-1], wrapped.original)
 
 
-def get_proj_layer(model, block_idx: int) -> nn.Linear:
-    """Get the attention output projection layer from a specific block."""
-    from src.core.library.layers import get_block
-    block = get_block(model, block_idx)
-    return block.attn.proj
+def save_checker_weights(model_name: str, weights: dict[str, torch.Tensor]):
+    """Save precomputed checker weights to file."""
+    CHECKER_WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = CHECKER_WEIGHTS_DIR / f"{model_name}_checker.pt"
+    torch.save(weights, path)
+    print(f"Saved checker weights to {path}")
 
 
-def get_fc2_layer(model, block_idx: int) -> nn.Linear:
-    """Get the second MLP layer (fc2) from a specific block."""
-    from src.core.library.layers import get_block
-    block = get_block(model, block_idx)
-    return block.mlp.fc2
+def load_checker_weights(model_name: str) -> dict[str, torch.Tensor] | None:
+    """Load precomputed checker weights from file."""
+    path = CHECKER_WEIGHTS_DIR / f"{model_name}_checker.pt"
+    if path.exists():
+        return torch.load(path)
+    return None
