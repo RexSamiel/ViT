@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vit-fault-injection"
+name = "vit-fault"
 version = "0.1.0"
-description = "Vision Transformer Fault Injection Framework for Reliability Analysis"
+description = "Vision Transformer Fault Injection and Detection Framework"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0.0",
@@ -15,9 +15,23 @@ dependencies = [
     "numpy>=1.21.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "hypothesis>=6.0.0",
+]
+plotting = [
+    "matplotlib>=3.5.0",
+]
+
 [project.scripts]
-vit-inject = "src.main:main"
+vit-fault = "vit_fault.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+include = ["vit_fault*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["src"]
