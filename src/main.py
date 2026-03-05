@@ -238,19 +238,6 @@ Workflow:
         help="Number of faults to inject (default: 1)",
     )
     fd_parser.add_argument(
-        "--method",
-        type=str,
-        default="neuro",
-        choices=["neuro", "checksum"],
-        help="Detection method: neuro (mean-based) or checksum (sum-based ABFT) (default: neuro)",
-    )
-    fd_parser.add_argument(
-        "--detailed",
-        type=str,
-        default="false",
-        help="Show per-row/col diffs for checksum method (default: false)",
-    )
-    fd_parser.add_argument(
         "--relative",
         type=str,
         default="false",
@@ -391,24 +378,17 @@ def run_fault_detection(args, runner: ModelRunner, verbose: bool) -> None:
     bit_range = parse_bit_range(args.bit_range)
     threshold = args.threshold
     fault_count = args.fault_count
-    method = args.method
-    detailed = str_to_bool(args.detailed)
     relative = str_to_bool(args.relative)
     load_weights = str_to_bool(args.load_weights)
     recompute = str_to_bool(args.recompute)
 
-    # Create detector with method and threshold
-    detector = fault_detection.FaultDetector(
-        runner.model, method=method, threshold=threshold
-    )
+    detector = fault_detection.FaultDetector(runner.model, threshold=threshold)
 
-    # Load pre-saved weights (computes and saves if not cached)
     if load_weights:
         detector.load_weights(args.model, force_recompute=recompute)
 
     detector.apply(layer_filter)
 
-    # Get data
     batches = runner.get_batches()
     if not batches:
         print("No batches available")
@@ -428,7 +408,7 @@ def run_fault_detection(args, runner: ModelRunner, verbose: bool) -> None:
         _ = runner.model(images)
 
     # Print results
-    detector.print_values(detailed=detailed, relative=relative)
+    detector.print_values(relative=relative)
 
     # Cleanup
     if injector:

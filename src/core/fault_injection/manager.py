@@ -119,15 +119,10 @@ class FaultInjection:
 
     def print_summary(self, n_runs: int, total_runtime: float) -> None:
         """Print full multi-run summary."""
-        print(
-            f"\n{'*' * 60}\n"
-            f" SUMMARY: {n_runs} runs completed in {total_runtime:.2f}s\n"
-            f"{'*' * 60}\n"
-        )
+        print(f" SUMMARY: {n_runs} runs completed in {total_runtime:.2f}s\n")
         self.accuracy.print_summary()
         print()
         self.sdc.print_summary()
-        print("=" * 60)
 
 
 def run_single(

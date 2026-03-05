@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from src.core.library.utils import flip_random_bit
-from src.core.fault_detection.neuron import NeuroChecker, ChecksumChecker
+from src.core.fault_detection.neuron import NeuroChecker
 
 
 def get_linear_layers(model: nn.Module) -> dict[str, nn.Linear]:
@@ -14,7 +14,7 @@ def get_linear_layers(model: nn.Module) -> dict[str, nn.Linear]:
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) and name:
             layers[name] = module
-        elif isinstance(module, (NeuroChecker, ChecksumChecker)):
+        elif isinstance(module, NeuroChecker):
             layers[name] = module.original
     return layers
 

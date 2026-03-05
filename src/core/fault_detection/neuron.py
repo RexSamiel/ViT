@@ -8,7 +8,7 @@ CHECKER_WEIGHTS_DIR = Path(__file__).parent.parent.parent / "data" / "checker_we
 
 
 class NeuroChecker(nn.Module):
-    """Linear layer with mean-based checker neuron."""
+    """Linear layer with mean checker neuron."""
 
     def __init__(
         self,
@@ -58,93 +58,19 @@ class NeuroChecker(nn.Module):
         return out
 
 
-class ChecksumChecker(nn.Module):
-    """Classical matrix checksum ABFT for linear layer fault detection.
-
-    For y = x @ W.T + b, ABFT verifies:
-    - Output row checksum: y.sum(dim=-1) should equal x @ col_sums(W) + sum(b)
-    - Output col checksum: y.sum(dim=0) should equal row_sums(W) @ x.sum(dim=0) + b * batch_size
-
-    Weight sums are used to locate faults after detection.
-    """
-
-    def __init__(
-        self,
-        original: nn.Linear,
-        col_sums: torch.Tensor | None = None,
-        row_sums: torch.Tensor | None = None,
-        total_sum: torch.Tensor | None = None,
-        bias_sum: torch.Tensor | None = None,
-    ):
-        super().__init__()
-        self.original = original
-        self.out_features = original.out_features
-        self.in_features = original.in_features
-
-        W = original.weight.data
-
-        self.clean_col_sums = col_sums if col_sums is not None else W.sum(dim=0).clone()
-        self.clean_row_sums = row_sums if row_sums is not None else W.sum(dim=1).clone()
-        self.clean_total = total_sum if total_sum is not None else W.sum().clone()
-
-        if bias_sum is not None:
-            self.clean_bias_sum = bias_sum
-        elif original.bias is not None:
-            self.clean_bias_sum = original.bias.data.sum().clone()
-        else:
-            self.clean_bias_sum = None
-
-        self.output_checksum_diff = None
-        self.row_diffs = None
-        self.col_diffs = None
-        self.total_diff = None
-        self.bias_diff = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = F.linear(x, self.original.weight, self.original.bias)
-        self.original.forward(x)
-
-        expected_row_sums = torch.matmul(x, self.clean_col_sums)
-        if self.clean_bias_sum is not None:
-            expected_row_sums = expected_row_sums + self.clean_bias_sum
-
-        actual_row_sums = out.sum(dim=-1)
-
-        checksum_diff = actual_row_sums - expected_row_sums
-        self.output_checksum_diff = checksum_diff.abs().max().item()
-
-        W = self.original.weight
-        current_col_sums = W.sum(dim=0)
-        current_row_sums = W.sum(dim=1)
-
-        self.col_diffs = current_col_sums - self.clean_col_sums
-        self.row_diffs = current_row_sums - self.clean_row_sums
-        self.total_diff = (W.sum() - self.clean_total).item()
-
-        if self.original.bias is not None and self.clean_bias_sum is not None:
-            self.bias_diff = (self.original.bias.sum() - self.clean_bias_sum).item()
-        else:
-            self.bias_diff = None
-
-        return out
-
-
 LinearChecker = NeuroChecker
-CheckerType = NeuroChecker | ChecksumChecker
 
 
 def wrap_layer(
     model: nn.Module,
     name: str,
-    method: str = "neuro",
     preloaded_weights: dict | None = None,
-) -> CheckerType:
-    """Replace a linear layer with a checker wrapper.
+) -> NeuroChecker:
+    """Replace a linear layer with a NeuroChecker wrapper.
 
     Args:
         model: The model containing the layer
         name: Dot-separated path to the layer
-        method: "neuro" for mean-based, "checksum" for sum-based ABFT
         preloaded_weights: Optional dict with pre-computed weights for this layer
     """
     parts = name.split(".")
@@ -154,26 +80,14 @@ def wrap_layer(
 
     orig = getattr(parent, parts[-1])
 
-    if method == "checksum":
-        if preloaded_weights:
-            wrapped = ChecksumChecker(
-                orig,
-                col_sums=preloaded_weights.get("col_sums"),
-                row_sums=preloaded_weights.get("row_sums"),
-                total_sum=preloaded_weights.get("total_sum"),
-                bias_sum=preloaded_weights.get("bias_sum"),
-            )
-        else:
-            wrapped = ChecksumChecker(orig)
+    if preloaded_weights:
+        wrapped = NeuroChecker(
+            orig,
+            checker_row=preloaded_weights.get("checker_row"),
+            checker_bias=preloaded_weights.get("checker_bias"),
+        )
     else:
-        if preloaded_weights:
-            wrapped = NeuroChecker(
-                orig,
-                checker_row=preloaded_weights.get("checker_row"),
-                checker_bias=preloaded_weights.get("checker_bias"),
-            )
-        else:
-            wrapped = NeuroChecker(orig)
+        wrapped = NeuroChecker(orig)
 
     setattr(parent, parts[-1], wrapped)
     return wrapped
@@ -187,7 +101,7 @@ def unwrap_layer(model: nn.Module, name: str):
         parent = getattr(parent, p)
 
     wrapped = getattr(parent, parts[-1])
-    if isinstance(wrapped, (NeuroChecker, ChecksumChecker)):
+    if isinstance(wrapped, NeuroChecker):
         setattr(parent, parts[-1], wrapped.original)
 
 

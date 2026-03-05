@@ -211,11 +211,15 @@ class SDCTracker:
             valid_faulty = faulty[~nan_mask]
             valid_ff = faultfree[~nan_mask]
 
-            result["magnitude"] = cls.sdc_magnitude(valid_faulty, valid_ff).detach().cpu()
+            result["magnitude"] = (
+                cls.sdc_magnitude(valid_faulty, valid_ff).detach().cpu()
+            )
 
             rel = cls.relative_sdc(valid_faulty, valid_ff)
             if rel:
-                result["relative_levels"] = {k: v.detach().cpu() for k, v in rel.items()}
+                result["relative_levels"] = {
+                    k: v.detach().cpu() for k, v in rel.items()
+                }
 
             crit1 = cls.critical_top1(valid_faulty, valid_ff)
             crit5 = cls.critical_top5(valid_faulty, valid_ff)
@@ -257,15 +261,35 @@ class SDCTracker:
 
         # Critical SDC
         if critical_top1_rates:
-            results["critical_top1_sdc_rate"] = 100 * sum(critical_top1_rates) / len(critical_top1_rates)
-            results["critical_top5_sdc_rate"] = 100 * sum(critical_top5_rates) / len(critical_top5_rates)
+            results["critical_top1_sdc_rate"] = (
+                100 * sum(critical_top1_rates) / len(critical_top1_rates)
+            )
+            results["critical_top5_sdc_rate"] = (
+                100 * sum(critical_top5_rates) / len(critical_top5_rates)
+            )
         else:
             results["critical_top1_sdc_rate"] = 0.0
             results["critical_top5_sdc_rate"] = 0.0
 
         # Relative SDC thresholds
-        threshold_keys = ["sdc_1", "sdc_5", "sdc_10", "sdc_15", "sdc_20", "sdc_25", "sdc_50"]
-        pct_keys = ["sdc_1pct", "sdc_5pct", "sdc_10pct", "sdc_15pct", "sdc_20pct", "sdc_25pct", "sdc_50pct"]
+        threshold_keys = [
+            "sdc_1",
+            "sdc_5",
+            "sdc_10",
+            "sdc_15",
+            "sdc_20",
+            "sdc_25",
+            "sdc_50",
+        ]
+        pct_keys = [
+            "sdc_1pct",
+            "sdc_5pct",
+            "sdc_10pct",
+            "sdc_15pct",
+            "sdc_20pct",
+            "sdc_25pct",
+            "sdc_50pct",
+        ]
 
         if sdc_levels.get("sdc_1"):
             for tkey, pkey in zip(threshold_keys, pct_keys):
@@ -325,9 +349,14 @@ class SDCTracker:
     def get_results(self) -> dict:
         """Return summarized SDC metrics for current run."""
         return self.summarize_sdc(
-            self.sdc_rates, self.sdc_magnitudes, self.sdc_levels,
-            self.critical_top1_rates, self.critical_top5_rates,
-            self.batches_all_nan, self.batches_partial_nan, self.total_batches,
+            self.sdc_rates,
+            self.sdc_magnitudes,
+            self.sdc_levels,
+            self.critical_top1_rates,
+            self.critical_top5_rates,
+            self.batches_all_nan,
+            self.batches_partial_nan,
+            self.total_batches,
         )
 
     # Multi-run aggregation state
@@ -429,24 +458,34 @@ class SDCTracker:
         for pct in _THRESHOLD_PCTS:
             summary[f"avg_sdc_{pct}pct"] = self._avg_pct[pct]
 
-        summary.update({
-            "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
-            "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
-            "msdc_counted_runs": self.msdc_counted,
-            "avg_critical_top1_sdc": self.avg_critical_top1,
-            "std_critical_top1_sdc": AccuracyTracker.compute_std(self.m2_critical_top1, self.n_runs),
-            "avg_critical_top5_sdc": self.avg_critical_top5,
-            "std_critical_top5_sdc": AccuracyTracker.compute_std(self.m2_critical_top5, self.n_runs),
-            "high_risk_count": self.high_risk,
-            "high_risk_pct": 100 * self.high_risk / self.n_runs if self.n_runs else 0.0,
-            "medium_risk_count": self.medium_risk,
-            "medium_risk_pct": 100 * self.medium_risk / self.n_runs if self.n_runs else 0.0,
-            "safe_count": self.safe,
-            "safe_pct": 100 * self.safe / self.n_runs if self.n_runs else 0.0,
-            "batches_all_nan": self.total_batches_all_nan,
-            "batches_partial_nan": self.total_batches_partial_nan,
-            "total_batches": self.total_batches_all,
-        })
+        summary.update(
+            {
+                "avg_msdc": self.avg_msdc if self.msdc_counted > 0 else None,
+                "worst_msdc": self.worst_msdc if self.msdc_counted > 0 else None,
+                "msdc_counted_runs": self.msdc_counted,
+                "avg_critical_top1_sdc": self.avg_critical_top1,
+                "std_critical_top1_sdc": AccuracyTracker.compute_std(
+                    self.m2_critical_top1, self.n_runs
+                ),
+                "avg_critical_top5_sdc": self.avg_critical_top5,
+                "std_critical_top5_sdc": AccuracyTracker.compute_std(
+                    self.m2_critical_top5, self.n_runs
+                ),
+                "high_risk_count": self.high_risk,
+                "high_risk_pct": 100 * self.high_risk / self.n_runs
+                if self.n_runs
+                else 0.0,
+                "medium_risk_count": self.medium_risk,
+                "medium_risk_pct": 100 * self.medium_risk / self.n_runs
+                if self.n_runs
+                else 0.0,
+                "safe_count": self.safe,
+                "safe_pct": 100 * self.safe / self.n_runs if self.n_runs else 0.0,
+                "batches_all_nan": self.total_batches_all_nan,
+                "batches_partial_nan": self.total_batches_partial_nan,
+                "total_batches": self.total_batches_all,
+            }
+        )
 
         return summary
 

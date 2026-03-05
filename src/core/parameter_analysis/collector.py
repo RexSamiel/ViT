@@ -18,7 +18,6 @@ class DataCollector:
     - "wa": Weight analysis (iterates parameters)
     """
 
-    # Activation-specific exclude patterns
     ACTIVATION_EXCLUDE_PATTERNS: list[str] = [
         # Uncomment to exclude:
         # "attn_drop",    # Attention weights (0-1 probabilities)
@@ -40,12 +39,10 @@ class DataCollector:
         self.analysis_type = analysis_type
         self.sampling_percent = sampling_percent if analysis_type == "aa" else 100.0
 
-        # Get histogram configuration for this analysis type
         self.bin_range, self.bin_resolution, self.num_bins = get_histogram_config(
             analysis_type
         )
 
-        # Activation-specific state
         if analysis_type == "aa":
             self._hook_manager = HookManager()
             self.total_samples = 0
@@ -111,7 +108,6 @@ class DataCollector:
         module_type: str,
         component: str,
         block_idx: int | None,
-        # State passed from manager
         data_dict: dict,
         name_to_idx: dict,
         global_stats: dict,
@@ -186,12 +182,8 @@ class DataCollector:
         element_counts[component]["sampled"] += num_sampled
         data_dict[idx]["sampled_elements"] += num_sampled
 
-        data_range[component]["min"] = min(
-            data_range[component]["min"], sampled_min
-        )
-        data_range[component]["max"] = max(
-            data_range[component]["max"], sampled_max
-        )
+        data_range[component]["min"] = min(data_range[component]["min"], sampled_min)
+        data_range[component]["max"] = max(data_range[component]["max"], sampled_max)
 
     def record_weight(
         self,
@@ -257,10 +249,9 @@ class DataCollector:
             data_range[comp]["max"] = max(data_range[comp]["max"], param_max)
 
             # Update histogram with proper resolution
-            bin_indices = (
-                np.floor(param_flat / self.bin_resolution).astype(np.int64)
-                + int(self.bin_range / self.bin_resolution)
-            )
+            bin_indices = np.floor(param_flat / self.bin_resolution).astype(
+                np.int64
+            ) + int(self.bin_range / self.bin_resolution)
             bin_indices = np.clip(bin_indices, 0, len(hist_counts[comp]) - 1)
             np.add.at(hist_counts[comp], bin_indices, 1)
 
