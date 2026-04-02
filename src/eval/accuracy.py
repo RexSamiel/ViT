@@ -74,7 +74,6 @@ class AccuracyTracker:
 
         self.n_runs += 1
 
-        # Welford's online algorithm
         delta_top1 = top1 - self.avg_top1
         delta_top5 = top5 - self.avg_top5
 
@@ -87,7 +86,6 @@ class AccuracyTracker:
         self.m2_top1 += delta_top1 * delta2_top1
         self.m2_top5 += delta_top5 * delta2_top5
 
-        # Track extremes
         self.worst_top1 = min(self.worst_top1, top1)
         self.worst_top5 = min(self.worst_top5, top5)
         self.best_top1 = max(self.best_top1, top1)

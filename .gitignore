@@ -27,11 +27,15 @@ setting.py
 results/*
 !results/*.py
 
+.scripts
 # Claude
 .claude/
-
+.onnx
+.scripts
 # Cache
 cache*/
 .cache/
 
 .hypothesis/
+
+.pytest*

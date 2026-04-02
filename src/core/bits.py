@@ -4,15 +4,17 @@ import random
 import torch
 
 
-def flip_random_bit(
+def flip_bit(
     value: torch.Tensor,
+    bit: int | None = None,
     bit_range: tuple[int, int] | None = None,
 ) -> tuple[torch.Tensor, int, str, str]:
-    """Flip a random bit in a float32 value's IEEE 754 representation.
+    """Flip a bit in a float32 value's IEEE 754 representation.
 
     Args:
         value: Scalar tensor to corrupt
-        bit_range: Optional (min, max) bit range, defaults to (0, 31)
+        bit: Specific bit to flip (0-31). If None, randomly selected from bit_range
+        bit_range: Range (min, max) for random bit selection. Defaults to (0, 31)
 
     Returns:
         Tuple of (corrupted_value, bit_index, original_bits, corrupted_bits)
@@ -20,9 +22,9 @@ def flip_random_bit(
     if value.dtype != torch.float32:
         value = value.float()
 
-    if bit_range is None:
-        bit = random.randint(0, 31)
-    else:
+    if bit is None:
+        if bit_range is None:
+            bit_range = (0, 31)
         bit = random.randint(bit_range[0], bit_range[1])
 
     val_int = value.view(torch.int32)

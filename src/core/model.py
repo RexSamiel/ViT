@@ -1,45 +1,17 @@
 """Model loading and data management."""
 
-import os
 import functools
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import timm
 from timm.data.config import resolve_data_config
 from timm.data.transforms_factory import create_transform
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from vit_fault.core.data import ImageNetDataset
-
-
-SUPPORTED_MODELS = {
-    "vit_tiny": "vit_tiny_patch16_224",
-    "vit_small": "vit_small_patch16_224",
-    "vit_base": "vit_base_patch16_224",
-    "vit_large": "vit_large_patch16_224",
-    "deit_tiny": "deit_tiny_patch16_224",
-    "deit_small": "deit_small_patch16_224",
-    "deit_base": "deit_base_patch16_224",
-    "swin_tiny": "swin_tiny_patch4_window7_224",
-    "swin_small": "swin_small_patch4_window7_224",
-    "swin_base": "swin_base_patch4_window7_224",
-    "beit_base": "beit_base_patch16_224",
-}
-
-
-@dataclass
-class ModelConfig:
-    """Configuration for model and data loading."""
-
-    data_root: str = "/run/media/samiel/K_USB_256/imagenet/"
-    batch_size: int = 100
-    max_batches: int | None = 1
-    num_workers: int = field(default_factory=lambda: min(4, os.cpu_count() or 2))
-    device: torch.device = field(default_factory=lambda: torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    ))
+from core.data import ImageNetDataset
+from core.config import ModelConfig, SUPPORTED_MODELS, LOGITS_DIR
 
 
 class Model:
@@ -62,10 +34,8 @@ class Model:
         self.config = config or ModelConfig()
         self.verbose = verbose
 
-        # Resolve model name
         self.model_name = SUPPORTED_MODELS.get(name, name)
 
-        # Load model
         self.net = self._load_model()
         self.dataloader = self._create_dataloader()
         self._logits_cache = LogitsCache(name)
@@ -79,7 +49,6 @@ class Model:
         model = model.to(self.config.device)
         model.eval()
 
-        # Warmup for CUDA
         if self.config.device.type == "cuda":
             with torch.inference_mode():
                 dummy = torch.randn(1, 3, 224, 224, device=self.config.device)
@@ -89,24 +58,38 @@ class Model:
         return model
 
     def _create_dataloader(self) -> DataLoader:
-        """Create validation dataloader."""
+        """Create dataloader (validation or training based on config)."""
+        split = "train" if self.config.use_train else "val"
+        is_training = self.config.use_train
+
         try:
             data_cfg = resolve_data_config(self.net.pretrained_cfg)
-            transform = create_transform(is_training=False, **data_cfg)
+            transform = create_transform(is_training=is_training, **data_cfg)
         except Exception:
             from torchvision import transforms
-            transform = transforms.Compose([
-                transforms.Resize(256),
-                transforms.CenterCrop(224),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-            ])
 
-        dataset = ImageNetDataset(self.config.data_root, transform=transform)
+            transform = transforms.Compose(
+                [
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+                ]
+            )
+
+        dataset = ImageNetDataset(
+            self.config.data_root,
+            transform=transform,
+            split=split,
+        )
+
+        if self.verbose:
+            print(f"Using {split} data: {len(dataset)} samples")
+
         return DataLoader(
             dataset,
             batch_size=self.config.batch_size,
-            shuffle=False,
+            shuffle=is_training,
             num_workers=self.config.num_workers,
             pin_memory=True,
         )
@@ -157,14 +140,16 @@ class Model:
             labels_list.append(labels.cpu())
 
         self._logits_cache.save(logits_list, labels_list)
-        print(f"\nBaseline saved: {len(batches)} batches, {sum(l.shape[0] for l in logits_list)} samples")
+        print(
+            f"\nBaseline saved: {len(batches)} batches, {sum(l.shape[0] for l in logits_list)} samples"
+        )
 
 
 class LogitsCache:
     """Cache for fault-free logits (baseline for SDC computation)."""
 
     def __init__(self, model_key: str):
-        self.path = Path("data/logits") / f"ff_logits_{model_key}.pt"
+        self.path = LOGITS_DIR / f"ff_logits_{model_key}.pt"
         self.data = None
         self._load()
 
@@ -176,10 +161,13 @@ class LogitsCache:
     def save(self, logits: list, labels: list):
         """Save fault-free logits."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "logits": torch.cat(logits),
-            "labels": torch.cat(labels),
-        }, self.path)
+        torch.save(
+            {
+                "logits": torch.cat(logits),
+                "labels": torch.cat(labels),
+            },
+            self.path,
+        )
         print(f"✓ Saved fault-free logits to {self.path}")
 
     def get_batch(self, batch_idx: int, batch_size: int, device: torch.device):
