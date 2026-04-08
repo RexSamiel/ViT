@@ -15,6 +15,7 @@ import argparse
 import json
 import math
 import random
+import statistics as _stlib
 import sys
 from pathlib import Path
 
@@ -72,6 +73,11 @@ class ChainedArgumentParser:
             help="Verbose output: per-run results, fault lists, layer info",
         )
         parser.add_argument(
+            "--time",
+            action="store_true",
+            help="Show overall system execution time and total inference time",
+        )
+        parser.add_argument(
             "--output",
             "-o",
             type=str,
@@ -104,6 +110,17 @@ class ChainedArgumentParser:
             type=str,
             default=None,
             help="Bit range for flips, e.g., '20,31'",
+        )
+        parser.add_argument(
+            "--fault_seed",
+            type=int,
+            default=None,
+            help="Seed for fault injection RNG. Use the same value across runs to inject identical faults for valid comparisons.",
+        )
+        parser.add_argument(
+            "--time",
+            action="store_true",
+            help="Show per-run and aggregate inference timing breakdown",
         )
         parser.add_argument(
             "--component",
@@ -144,6 +161,11 @@ class ChainedArgumentParser:
             choices=["zero", "rerun", "subtract", "correct"],
             help="Correction mode: 'zero' zeroes faulty outputs, 'rerun' recomputes from clean baseline, 'subtract' subtracts the weight-sum diff, 'correct' finds exact fault position and subtracts per-token error",
         )
+        parser.add_argument(
+            "--time",
+            action="store_true",
+            help="Show per-layer detection timing (wall-clock, includes GEMM + detection ops)",
+        )
         return parser
 
     def _create_pa_parser(self):
@@ -173,6 +195,17 @@ class ChainedArgumentParser:
             "--weights",
             action="store_true",
             help="Include full weights (needed for col-check localisation and rerun correction)",
+        )
+        parser.add_argument(
+            "--threshold",
+            action="store_true",
+            help="Calibrate detection threshold from clean data and save it for both methods",
+        )
+        parser.add_argument(
+            "--margin",
+            type=float,
+            default=3.0,
+            help="Number of standard deviations above mean noise: atol = mean + margin * std (3-sigma rule, default: 3.0)",
         )
         parser.add_argument(
             "--layers",
@@ -257,7 +290,10 @@ def run_commands(global_args, commands):
 
     if global_args.warmup > 0:
         from eval.metrics import evaluate
-        print(f"Warming up ({global_args.warmup} pass{'es' if global_args.warmup > 1 else ''})...")
+
+        print(
+            f"Warming up ({global_args.warmup} pass{'es' if global_args.warmup > 1 else ''})..."
+        )
         for _ in range(global_args.warmup):
             evaluate(model)
         print("Warmup done.")
@@ -275,7 +311,7 @@ def run_commands(global_args, commands):
             action_cmd = "hr"
             action_args = cmd_args
         elif cmd_name == "eval":
-            if action_cmd != "hr":  # hr already implies evaluation ��� don't overwrite it
+            if action_cmd != "hr":
                 action_cmd = "eval"
                 action_args = cmd_args
         elif cmd_name == "pa":
@@ -288,7 +324,6 @@ def run_commands(global_args, commands):
     if action_cmd or injector:
         run_experiment(model, global_args, injector, action_cmd, action_args, fi_args)
     elif injector and not action_cmd:
-        # Only fi specified - do a test injection
         if injector.fi_ber is not None:
             injector.inject(ber=injector.fi_ber)
         else:
@@ -330,6 +365,13 @@ def run_experiment(model, global_args, injector, action_cmd, action_args, fi_arg
         method = getattr(action_args, "method", "checkone")
         detector_cls = Checksum if method == "checksum" else CheckOne
         detector = detector_cls(model, layers=action_args.detect, correction=correction)
+        # Enable per-layer timing if hr --time is set
+        if getattr(action_args, "time", False):
+            detector.enable_timing(True)
+        # Refresh injector layer refs: detector replaced nn.Linear with wrappers,
+        # so the injector must now target wrapper.weight (-> weights_ext) not originals.
+        if injector:
+            injector.refresh_layers()
         # Always try to load baseline (needed for input detection and correction)
         if not detector.load():
             print(
@@ -359,6 +401,8 @@ def run_experiment(model, global_args, injector, action_cmd, action_args, fi_arg
 
         # Inject faults
         if injector:
+            if fi_args is not None and fi_args.fault_seed is not None:
+                random.seed(fi_args.fault_seed + run)
             if injector.fi_ber is not None:
                 injector.inject(ber=injector.fi_ber)
             else:
@@ -372,13 +416,43 @@ def run_experiment(model, global_args, injector, action_cmd, action_args, fi_arg
         # Print per-run results: always for single run, only with --info for multiple
         if verbose or repeat == 1:
             results.print()
+
+            # Inference timing breakdown (fi --time)
+            show_fi_time = fi_args is not None and getattr(fi_args, "time", False)
+            if show_fi_time and results.batch_times_ms:
+                bms = results.batch_times_ms
+                n_samples = results.samples
+                print(f"\n  Inference Timing:")
+                print(f"    Total forward:  {results.elapsed_s * 1000:.2f} ms")
+                print(f"    Per sample:     {results.ms_per_sample:.4f} ms/sample")
+                print(f"    Per batch:      avg={_stlib.mean(bms):.2f} ms  min={min(bms):.2f}  max={max(bms):.2f}  ({len(bms)} batches)")
+
             if detector:
                 detector.print_results()
 
+            # Detection layer timing (hr --time)
+            show_hr_time = getattr(action_args, "time", False) if action_args else False
+            if show_hr_time and detector:
+                layer_times = detector.get_layer_times()
+                if any(v > 0 for v in layer_times.values()):
+                    total_det_ms = sum(layer_times.values())
+                    n_samples = results.samples or 1
+                    print(f"\n  Detection Layer Timing ({detector.name}):")
+                    print(f"    Total detection: {total_det_ms:.3f} ms  |  {total_det_ms / n_samples:.4f} ms/sample")
+                    col = max(len(k) for k in layer_times) + 2
+                    print(f"    {'Layer':<{col}}  {'ms':>10}  {'ms/sample':>12}")
+                    print(f"    {'-'*col}  {'----------':>10}  {'------------':>12}")
+                    for lname, lms in sorted(layer_times.items()):
+                        print(f"    {lname:<{col}}  {lms:>10.3f}  {lms/n_samples:>12.4f}")
+
         # Accumulate per-layer detection stats
         if injector or detector:
-            injected_layers = {f["layer"] for f in injector.get_info()} if injector else set()
-            detected_layers = {f.layer for f in detector.get_faults()} if detector else set()
+            injected_layers = (
+                {f["layer"] for f in injector.get_info()} if injector else set()
+            )
+            detected_layers = (
+                {f.layer for f in detector.get_faults()} if detector else set()
+            )
             all_layers = injected_layers | detected_layers
             for layer in all_layers:
                 _record_layer(layer, layer in injected_layers, layer in detected_layers)
@@ -389,6 +463,8 @@ def run_experiment(model, global_args, injector, action_cmd, action_args, fi_arg
         run_data["seed"] = global_args.seed
         if detector:
             run_data["detection"] = detector.get_values()
+            if getattr(action_args, "time", False):
+                run_data["layer_times_ms"] = detector.get_layer_times()
         if injector:
             run_data["faults"] = injector.get_info()
         all_results.append(run_data)
@@ -434,29 +510,69 @@ def run_experiment(model, global_args, injector, action_cmd, action_args, fi_arg
             print()
             avg_c1, min_c1, max_c1 = _stats("critical_top1")
             avg_c5, min_c5, max_c5 = _stats("critical_top5")
-            print(f"Critical Top-1: {avg_c1:.2f}%  (min={min_c1:.2f}, max={max_c1:.2f})")
-            print(f"Critical Top-5: {avg_c5:.2f}%  (min={min_c5:.2f}, max={max_c5:.2f})")
+            print(
+                f"Critical Top-1: {avg_c1:.2f}%  (min={min_c1:.2f}, max={max_c1:.2f})"
+            )
+            print(
+                f"Critical Top-5: {avg_c5:.2f}%  (min={min_c5:.2f}, max={max_c5:.2f})"
+            )
 
-        # Timing
-        avg_mps, min_mps, max_mps = _stats("ms_per_sample")
-        total_s = sum(r.get("elapsed_s", 0.0) for r in all_results)
-        print()
-        print(f"Time: {avg_mps:.3f} ms/sample avg  (min={min_mps:.3f}, max={max_mps:.3f})  |  {total_s:.1f} s total")
+        # Timing (fi --time or global --time)
+        show_fi_time = fi_args is not None and getattr(fi_args, "time", False)
+        show_global_time = global_args.time
+        if show_fi_time or show_global_time:
+            avg_mps, min_mps, max_mps = _stats("ms_per_sample")
+            total_s = sum(r.get("elapsed_s", 0.0) for r in all_results)
+            all_batch_times = [t for r in all_results for t in r.get("batch_times_ms", [])]
+            print()
+            print(f"Inference Timing ({repeat} runs):")
+            print(f"  ms/sample: avg={avg_mps:.4f}  min={min_mps:.4f}  max={max_mps:.4f}")
+            print(f"  Total forward time: {total_s * 1000:.1f} ms  ({total_s:.3f} s)")
+            if all_batch_times:
+                print(f"  Per-batch: avg={_stlib.mean(all_batch_times):.2f} ms  min={min(all_batch_times):.2f}  max={max(all_batch_times):.2f}")
 
         # Detection summary
         if layer_stats:
             print()
             print(f"Detection Summary:")
             col = max(len(l) for l in layer_stats) + 2
-            print(f"  {'Layer':<{col}}  {'Injected':>8}  {'Detected':>8}  {'Rate':>7}  {'False+':>6}")
-            print(f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}")
+            print(
+                f"  {'Layer':<{col}}  {'Injected':>8}  {'Detected':>8}  {'Rate':>7}  {'False+':>6}"
+            )
+            print(
+                f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}"
+            )
             for layer in sorted(layer_stats):
                 s = layer_stats[layer]
                 inj = s["injected"]
                 det = s["detected"]
-                fp  = s["false_positive"]
+                fp = s["false_positive"]
                 rate = f"{100 * det / inj:.1f}%" if inj else "  n/a"
                 print(f"  {layer:<{col}}  {inj:>8}  {det:>8}  {rate:>7}  {fp:>6}")
+
+        # Aggregate detection timing (hr --time)
+        show_hr_time = getattr(action_args, "time", False) if action_args else False
+        if show_hr_time and any("layer_times_ms" in r for r in all_results):
+            runs_with_times = [r for r in all_results if "layer_times_ms" in r]
+            all_layer_names = sorted({k for r in runs_with_times for k in r["layer_times_ms"]})
+            n_samples_total = sum(r.get("samples", 1) for r in all_results)
+            n_samples_per_run = all_results[0].get("samples", 1)
+
+            print()
+            det_name = detector.name if detector else "detection"
+            print(f"Detection Timing — {det_name} ({len(runs_with_times)} runs):")
+            total_per_run = [sum(r["layer_times_ms"].values()) for r in runs_with_times]
+            avg_total = sum(total_per_run) / len(total_per_run)
+            print(f"  Total detection/run: avg={avg_total:.3f} ms  min={min(total_per_run):.3f}  max={max(total_per_run):.3f}")
+            print(f"  Per sample:          {avg_total / n_samples_per_run:.4f} ms/sample")
+            print()
+            col = max(len(k) for k in all_layer_names) + 2
+            print(f"  {'Layer':<{col}}  {'avg ms':>10}  {'min ms':>10}  {'max ms':>10}  {'ms/sample':>12}")
+            print(f"  {'-'*col}  {'----------':>10}  {'----------':>10}  {'----------':>10}  {'------------':>12}")
+            for lname in all_layer_names:
+                vals = [r["layer_times_ms"].get(lname, 0.0) for r in runs_with_times]
+                avg_v = sum(vals) / len(vals)
+                print(f"  {lname:<{col}}  {avg_v:>10.3f}  {min(vals):>10.3f}  {max(vals):>10.3f}  {avg_v/n_samples_per_run:>12.4f}")
 
     # Save results
     if global_args.output and all_results:
@@ -486,14 +602,20 @@ def _build_summary(all_results: list[dict], global_args, fi_args) -> dict:
         return sum(vals) / len(vals) if vals else 0.0
 
     def _std(vals, m):
-        return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1)) if len(vals) > 1 else 0.0
+        return (
+            math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
+            if len(vals) > 1
+            else 0.0
+        )
 
     top1s = [r["top1_acc"] for r in all_results]
     top5s = [r["top5_acc"] for r in all_results]
     avg_top1 = _mean(top1s)
     avg_top5 = _mean(top5s)
 
-    mps_vals = [r["ms_per_sample"] for r in all_results if r.get("ms_per_sample") is not None]
+    mps_vals = [
+        r["ms_per_sample"] for r in all_results if r.get("ms_per_sample") is not None
+    ]
     avg_mps = _mean(mps_vals)
 
     summary: dict = {
@@ -510,8 +632,16 @@ def _build_summary(all_results: list[dict], global_args, fi_args) -> dict:
     if all_results[0].get("sdc_rate") is not None:
         sdc_rates = [r["sdc_rate"] for r in all_results]
         msdcs = [r["msdc"] for r in all_results if r.get("msdc") is not None]
-        crit1s = [r["critical_top1"] for r in all_results if r.get("critical_top1") is not None]
-        crit5s = [r["critical_top5"] for r in all_results if r.get("critical_top5") is not None]
+        crit1s = [
+            r["critical_top1"]
+            for r in all_results
+            if r.get("critical_top1") is not None
+        ]
+        crit5s = [
+            r["critical_top5"]
+            for r in all_results
+            if r.get("critical_top5") is not None
+        ]
 
         avg_logit_sdc = _mean(sdc_rates)
         avg_msdc = _mean(msdcs)
@@ -534,8 +664,10 @@ def _build_summary(all_results: list[dict], global_args, fi_args) -> dict:
         # Risk categories (mirrors SDCTracker logic)
         high_risk = sum(1 for r in all_results if (r.get("critical_top1") or 0.0) > 0.0)
         medium_risk = sum(
-            1 for r in all_results
-            if (r.get("critical_top1") or 0.0) == 0.0 and (r.get("critical_top5") or 0.0) > 0.0
+            1
+            for r in all_results
+            if (r.get("critical_top1") or 0.0) == 0.0
+            and (r.get("critical_top5") or 0.0) > 0.0
         )
         safe = n - high_risk - medium_risk
         summary["high_risk_count"] = high_risk
@@ -549,8 +681,10 @@ def _build_summary(all_results: list[dict], global_args, fi_args) -> dict:
     sub_component = getattr(fi_args, "component", None) if fi_args else None
     block_idx = getattr(fi_args, "block", None) if fi_args else None
     component = (
-        "attention" if sub_component in ("qkv", "proj")
-        else "mlp" if sub_component in ("fc1", "fc2")
+        "attention"
+        if sub_component in ("qkv", "proj")
+        else "mlp"
+        if sub_component in ("fc1", "fc2")
         else None
     )
     summary["config"] = {
@@ -584,13 +718,14 @@ def run_pa(model, args, model_name):
 
 
 def run_save(model, args):
-    """Save baseline data.
+    """Save baseline data for both detection methods in one pass.
 
-    Produces a single shared baseline file usable by both checkone and checksum.
-    The file contains weight checksums (always), calibrated input ranges (--inputs),
-    and full weights (--weights).
+    --threshold  : calibrate atol from clean data for both checkone and checksum
+    --inputs     : calibrate input fault range for checkone
+    --weights    : save full weights (correction only)
+    --logits     : save fault-free logits
     """
-    from detection import CheckOne
+    from detection import CheckOne, Checksum
 
     saved = False
 
@@ -599,27 +734,41 @@ def run_save(model, args):
         model.save_baseline()
         saved = True
 
-    if args.inputs or args.weights:
-        print("\nSaving Detection Baseline")
-        # CheckOne wrapper computes both weight_sums and w_col_sums (for checksum)
-        # and handles input calibration — one pass covers both methods.
-        detector = CheckOne(model, layers=args.layers)
+    if args.inputs or args.weights or args.threshold:
+        margin = getattr(args, "margin", 3.0)
+
+        print("\nSaving CheckOne Calibration")
+        co = CheckOne(model, layers=args.layers)
         if args.inputs:
-            detector.calibrate(model)
-        detector.save(include_weights=args.weights)
-        detector.remove()
+            co.calibrate(model)
+        if args.threshold:
+            co.calibrate_threshold(model, margin=margin)
+        co.save(include_weights=args.weights)
+        co.remove()
+
+        print("\nSaving Checksum Calibration")
+        cs = Checksum(model, layers=args.layers)
+        if args.threshold:
+            cs.calibrate_threshold(model, margin=margin)
+        cs.save(include_weights=args.weights)
+        cs.remove()
+
         saved = True
 
     if not saved:
         print(
             "Use --logits to save fault-free logits.\n"
+            "Use --threshold to calibrate detection threshold from clean data (both methods).\n"
             "Use --inputs to calibrate input ranges (checkone input detection).\n"
             "Use --weights to store full weights (col-check and rerun correction).\n"
-            "Example: save --inputs --weights"
+            "Example: save --threshold --inputs --weights"
         )
 
 
 def main():
+    import time as _time
+    _script_start = _time.perf_counter()
+
     parser = ChainedArgumentParser()
 
     try:
@@ -646,9 +795,18 @@ def main():
             use_train=(global_args.data == "train"),
         )
         Model(global_args.model, config=config)
-        print("Model loaded. Add 'eval' to evaluate, or 'fi ... eval' to inject and evaluate.")
+        print(
+            "Model loaded. Add 'eval' to evaluate, or 'fi ... eval' to inject and evaluate."
+        )
     else:
         run_commands(global_args, commands)
+
+    if global_args.time:
+        _script_elapsed = _time.perf_counter() - _script_start
+        print(f"\n{'=' * 60}")
+        print(f"TIMING SUMMARY")
+        print(f"{'=' * 60}")
+        print(f"  Total script execution: {_script_elapsed * 1000:.1f} ms  ({_script_elapsed:.3f} s)")
 
     print("\nDone.")
 

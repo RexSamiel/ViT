@@ -26,8 +26,27 @@ def _get_num_workers() -> int:
 IMAGENET_PATH = os.environ.get("IMAGENET_PATH", "/run/media/samiel/K_USB_256/imagenet/")
 
 DATA_DIR = Path(os.environ.get("VIT_DATA_DIR", "data"))
-DETECTION_DIR = DATA_DIR / "detection"
-LOGITS_DIR = DATA_DIR / "logits"
+
+
+def weights_path(model_name: str, method: str) -> Path:
+    """Clean weight matrices for correction — static, always overwritten.
+    data/{model}/weights/{method}.pt
+    """
+    return DATA_DIR / model_name / "weights" / f"{method}.pt"
+
+
+def logits_path(model_name: str, n_samples: int) -> Path:
+    """Fault-free logits for a specific sample count — multiple can coexist.
+    data/{model}/logits/{n_samples}_samples.pt
+    """
+    return DATA_DIR / model_name / "logits" / f"{n_samples}_samples.pt"
+
+
+def calibration_path(model_name: str, method: str) -> Path:
+    """Calibration thresholds — single file, always overwritten.
+    data/{model}/calibration/{method}.pt
+    """
+    return DATA_DIR / model_name / "calibration" / f"{method}.pt"
 
 
 @dataclass

@@ -11,7 +11,7 @@ from timm.data.transforms_factory import create_transform
 from pathlib import Path
 
 from core.data import ImageNetDataset
-from core.config import ModelConfig, SUPPORTED_MODELS, LOGITS_DIR
+from core.config import ModelConfig, SUPPORTED_MODELS, logits_path
 
 
 class Model:
@@ -38,7 +38,8 @@ class Model:
 
         self.net = self._load_model()
         self.dataloader = self._create_dataloader()
-        self._logits_cache = LogitsCache(name)
+        n_samples = config.batch_size * config.max_batches if config and config.max_batches else None
+        self._logits_cache = LogitsCache(name, n_samples)
 
     def _load_model(self) -> nn.Module:
         """Load pretrained model."""
@@ -139,36 +140,42 @@ class Model:
             logits_list.append(outputs.cpu())
             labels_list.append(labels.cpu())
 
-        self._logits_cache.save(logits_list, labels_list)
-        print(
-            f"\nBaseline saved: {len(batches)} batches, {sum(l.shape[0] for l in logits_list)} samples"
-        )
+        n_samples = sum(l.shape[0] for l in logits_list)
+        self._logits_cache.save(logits_list, labels_list, n_samples)
+        print(f"\nBaseline saved: {len(batches)} batches, {n_samples} samples")
 
 
 class LogitsCache:
     """Cache for fault-free logits (baseline for SDC computation)."""
 
-    def __init__(self, model_key: str):
-        self.path = LOGITS_DIR / f"ff_logits_{model_key}.pt"
+    def __init__(self, model_key: str, n_samples: int | None):
+        self.model_key = model_key
         self.data = None
-        self._load()
+        if n_samples is not None:
+            path = logits_path(model_key, n_samples)
+            if path.exists():
+                self.data = torch.load(path, weights_only=False)
+                print(f"✓ Fault-free logits loaded from {path}")
+            else:
+                print(f"  No logits found for {n_samples} samples ({path})")
+        else:
+            # max_batches=None means full dataset — scan for any available logits
+            import re
+            candidates = sorted(
+                (logits_path(model_key, 1).parent).glob("*_samples.pt"),
+                key=lambda p: int(re.search(r"(\d+)_samples", p.name).group(1)),
+                reverse=True,
+            )
+            if candidates:
+                self.data = torch.load(candidates[0], weights_only=False)
+                print(f"✓ Fault-free logits loaded from {candidates[0]}")
 
-    def _load(self):
-        if self.path.exists():
-            self.data = torch.load(self.path, weights_only=False)
-            print(f"✓ Fault-free logits loaded from {self.path}")
-
-    def save(self, logits: list, labels: list):
-        """Save fault-free logits."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            {
-                "logits": torch.cat(logits),
-                "labels": torch.cat(labels),
-            },
-            self.path,
-        )
-        print(f"✓ Saved fault-free logits to {self.path}")
+    def save(self, logits: list, labels: list, n_samples: int):
+        """Save fault-free logits to data/{model}/logits/{n_samples}_samples.pt."""
+        path = logits_path(self.model_key, n_samples)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"logits": torch.cat(logits), "labels": torch.cat(labels)}, path)
+        print(f"✓ Saved fault-free logits to {path}")
 
     def get_batch(self, batch_idx: int, batch_size: int, device: torch.device):
         """Get fault-free logits for a batch."""

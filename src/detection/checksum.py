@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.config import DETECTION_DIR
+from core.config import calibration_path, weights_path
 from core.layers import unwrap_layers, wrap_layers
 
 
@@ -32,15 +33,22 @@ class _Wrapper(nn.Module):
     This lets us detect (row check) and localize (col check) weight faults.
     """
 
-    atol = 1e-2
-    rtol = 1e-3
+    atol: float = 1e-2
+    rtol: float = 0.0
+    weights_ext: torch.Tensor
 
     def __init__(self, original: nn.Linear, name: str):
         super().__init__()
         self.original = original
         self.name = name
+        self.C_out = original.weight.shape[0]
 
-        self.w_col_sums: torch.Tensor = original.weight.data.sum(dim=0).clone()
+        w_col_sums = original.weight.data.sum(dim=0)
+        self.register_buffer(
+            "weights_ext",
+            torch.cat([original.weight.data.clone(), w_col_sums.unsqueeze(0)], dim=0),
+            persistent=False,
+        )
 
         self.clean_weights: torch.Tensor | None = None
         self.clean_bias: torch.Tensor | None = None
@@ -50,9 +58,12 @@ class _Wrapper(nn.Module):
 
         self.correction: str | None = None
 
+        self.elapsed_ms: float = 0.0
+        self._timing: bool = False
+
     @property
     def weight(self):
-        return self.original.weight
+        return self.weights_ext[: self.C_out]
 
     @property
     def bias(self):
@@ -69,32 +80,28 @@ class _Wrapper(nn.Module):
             x = x.flatten(1, -2)
 
         B, N, C_in = x.shape
-        C_out = self.original.weight.shape[0]
 
-        W_ext = torch.cat(
-            [
-                self.original.weight,
-                self.w_col_sums.unsqueeze(0).to(device=x.device, dtype=x.dtype),
-            ],
-            dim=0,
-        )
+        _t0 = time.perf_counter() if self._timing else 0.0
 
         x_token_sums = x.sum(dim=1, keepdim=True)
         x_ext = torch.cat([x, x_token_sums], dim=1)
 
-        out_ext = F.linear(x_ext, W_ext)
+        out_ext = F.linear(x_ext, self.weights_ext)
 
-        out = out_ext[:, :N, :C_out]
-        golden_row = out_ext[:, :N, C_out]
-        actual_col = out_ext[:, N, :C_out]
+        out = out_ext[:, :N, : self.C_out]
+        golden_row = out_ext[:, :N, self.C_out]
+        actual_col = out_ext[:, N, : self.C_out]
 
         if self.original.bias is not None:
             out = out + self.original.bias
 
-        actual_row = out_ext[:, :N, :C_out].sum(dim=-1)  # [B, N]
+        actual_row = out_ext[:, :N, : self.C_out].sum(dim=-1)
 
         self.row_faults = self._detect_rows(actual_row, golden_row)
         self.col_faults = self._detect_cols(actual_col, x_token_sums)
+
+        if getattr(self, "_calibrating_threshold", False):
+            self.threshold_calibrate_update(actual_row, golden_row)
 
         if self.correction is not None:
             out = self._correct(out, x)
@@ -104,6 +111,11 @@ class _Wrapper(nn.Module):
 
         if squeeze:
             out = out.squeeze(1)
+
+        if self._timing:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self.elapsed_ms += (time.perf_counter() - _t0) * 1000.0
 
         return out
 
@@ -117,16 +129,12 @@ class _Wrapper(nn.Module):
         With a single weight fault in row i, EVERY token's row sum is off
         because every output vector Y[b,n,:] now contains a corrupted feature i.
         """
-        diffs = actual_row - golden_row  # [B, N]
-        threshold = self.atol + self.rtol * golden_row.abs()
-        mask = diffs.abs() > threshold
-
-        faults = []
-        for b in range(actual_row.shape[0]):
-            for tok in mask[b].nonzero(as_tuple=False).view(-1).tolist():
-                if isinstance(tok, int):
-                    faults.append((b, tok, diffs[b, tok].item()))
-        return faults
+        mask = ~torch.isclose(actual_row, golden_row, atol=self.atol, rtol=self.rtol)
+        if not mask.any():
+            return []
+        diffs = actual_row - golden_row
+        indices = mask.nonzero(as_tuple=False)
+        return [(int(r[0]), int(r[1]), float(diffs[r[0], r[1]])) for r in indices]
 
     def _detect_cols(
         self,
@@ -141,20 +149,14 @@ class _Wrapper(nn.Module):
         if self.clean_weights is None:
             return []
 
-        golden_col = F.linear(
-            x_token_sums.squeeze(1),
-            self.clean_weights.to(dtype=x_token_sums.dtype),
-        )
+        golden_col = F.linear(x_token_sums.squeeze(1), self.clean_weights)
 
-        diffs = actual_col - golden_col  # [B, C_out]
-        mask = diffs.abs() > self.atol
-
-        faults = []
-        for b in range(actual_col.shape[0]):
-            for feat in mask[b].nonzero(as_tuple=False).view(-1).tolist():
-                if isinstance(feat, int):
-                    faults.append((b, feat, diffs[b, feat].item()))
-        return faults
+        mask = ~torch.isclose(actual_col, golden_col, atol=self.atol, rtol=self.rtol)
+        if not mask.any():
+            return []
+        diffs = actual_col - golden_col
+        indices = mask.nonzero(as_tuple=False)
+        return [(int(r[0]), int(r[1]), float(diffs[r[0], r[1]])) for r in indices]
 
     def _correct(self, out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         faulty_feats = {feat for _, feat, _ in self.col_faults}
@@ -170,7 +172,7 @@ class _Wrapper(nn.Module):
             else:
                 for b, feat, _ in self.col_faults:
                     out[b, :, feat] = 0.0
-        else:  # "rerun"
+        else:
             if self.clean_weights is not None:
                 for feat in faulty_feats:
                     corrected = F.linear(x, self.clean_weights[feat : feat + 1, :])
@@ -197,20 +199,57 @@ class _Wrapper(nn.Module):
         """
         assert self.clean_weights is not None
         for feat in faulty_feats:
-            diff_row = self.original.weight[feat] - self.clean_weights[feat]  # [C_in]
+            diff_row = self.weight[feat] - self.clean_weights[feat]
             j = int(diff_row.abs().argmax().item())
             delta = diff_row[j].item()
             out[:, :, feat] -= x[:, :, j] * delta
         return out
 
+    def threshold_calibrate_start(self):
+        """Start collecting clean-condition row-check noise for threshold calibration."""
+        self._cal_abs_values: list[float] = []
+        self._cal_rel_values: list[float] = []
+        self._calibrating_threshold = True
+
+    def threshold_calibrate_update(
+        self, actual_row: torch.Tensor, golden_row: torch.Tensor
+    ):
+        """Record per-batch absolute and relative noise for threshold estimation."""
+        diff = (actual_row - golden_row).abs()
+        self._cal_abs_values.append(diff.max().item())
+        self._cal_rel_values.append((diff / (golden_row.abs() + 1e-12)).max().item())
+
+    def threshold_calibrate_end(self, margin: float = 1.0):
+        """Set atol and rtol using mean + margin * std of per-batch noise.
+
+        Uses the torch.allclose formula at inference: |diff| > atol + rtol * |signal|.
+        atol handles near-zero signals; rtol scales with signal magnitude.
+        margin is the number of standard deviations above the mean (same for both methods).
+        For CheckOne, rtol ≈ 0 (noise is data-independent); for Checksum, rtol > 0
+        for layers where noise scales with input magnitude.
+        """
+        if not self._cal_abs_values:
+            return
+
+        def _mean_std(vals: list[float]) -> tuple[float, float]:
+            mean = sum(vals) / len(vals)
+            std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+            return mean, std
+
+        abs_mean, abs_std = _mean_std(self._cal_abs_values)
+        rel_mean, rel_std = _mean_std(self._cal_rel_values)
+        self.atol = abs_mean + margin * abs_std
+        self.rtol = rel_mean + margin * rel_std
+        self._calibrating_threshold = False
+
     def get_baseline(self, include_weights: bool = False) -> dict:
-        """Return baseline data for saving."""
-        data: dict = {
-            "w_col_sums": self.w_col_sums.cpu(),
-            "weight_sums": self.original.weight.data.sum(dim=1).cpu(),  # for checkone
-        }
+        """Return baseline data for saving.
+
+        With include_weights: full weight matrix (needed for col-check and correction).
+        """
+        data: dict = {"atol": self.atol, "rtol": self.rtol}
         if include_weights:
-            data["weights"] = self.original.weight.data.cpu().clone()
+            data["weights"] = self.weight.data.cpu().clone()
             data["bias"] = (
                 self.original.bias.data.cpu().clone()
                 if self.original.bias is not None
@@ -218,15 +257,20 @@ class _Wrapper(nn.Module):
             )
         return data
 
-    def set_baseline(self, data: dict):
+    def set_baseline(self, data: dict, dtype: torch.dtype | None = None):
         """Load baseline data."""
-        device = self.original.weight.device
-        self.w_col_sums = data["w_col_sums"].to(device)
-
+        device = self.weights_ext.device
+        if "atol" in data:
+            self.atol = data["atol"]
+        if "rtol" in data:
+            self.rtol = data["rtol"]
         if "weights" in data:
-            self.clean_weights = data["weights"].to(device)
+            w = data["weights"].to(device=device, dtype=dtype or self.weights_ext.dtype)
+            self.clean_weights = w
             if data.get("bias") is not None:
-                self.clean_bias = data["bias"].to(device)
+                self.clean_bias = data["bias"].to(
+                    device=device, dtype=dtype or self.weights_ext.dtype
+                )
 
 
 class Checksum:
@@ -302,54 +346,120 @@ class Checksum:
             name: bool(w.row_faults or w.col_faults) for name, w in self.wrapped.items()
         }
 
+    def calibrate_threshold(
+        self, model=None, max_batches: int | None = None, margin: float = 3.0
+    ):
+        """Calibrate detection threshold from clean data.
+
+        Runs inference on clean model, measures floating-point noise in the row-check
+        signal, then sets atol = mean + margin*std (3-sigma rule) for each layer.
+
+        Args:
+            model: Model instance with dataloader. If None, uses model from __init__.
+            max_batches: Batches to use (None = full dataset, recommended).
+            margin: Standard deviations above mean (default 3.0 = 3-sigma rule).
+        """
+        if model is None:
+            model = self._model_ref
+
+        if not hasattr(model, "dataloader"):
+            print("Warning: Model has no dataloader, skipping threshold calibration")
+            return 0
+
+        for w in self.wrapped.values():
+            w.threshold_calibrate_start()
+
+        limit_str = f"up to {max_batches} batches" if max_batches is not None else "full dataset"
+        print(f"Calibrating threshold on {limit_str} (margin={margin})...")
+
+        device = next(model.net.parameters()).device
+        total_samples = 0
+        batch_count = 0
+        for images, _ in model.dataloader:
+            images = images.to(device, non_blocking=True)
+            with torch.inference_mode():
+                model.net(images)
+            total_samples += len(images)
+            batch_count += 1
+            if max_batches is not None and batch_count >= max_batches:
+                break
+
+        for w in self.wrapped.values():
+            w.threshold_calibrate_end(margin=margin)
+
+        print(f"  Calibrated on {total_samples} samples ({batch_count} batches)")
+        for name, w in self.wrapped.items():
+            abs_vals = getattr(w, "_cal_abs_values", [])
+            if abs_vals:
+                abs_mean = sum(abs_vals) / len(abs_vals)
+                abs_std = (sum((v - abs_mean) ** 2 for v in abs_vals) / len(abs_vals)) ** 0.5
+                print(f"  {name}: atol={w.atol:.2e} rtol={w.rtol:.2e}  (abs max={max(abs_vals):.2e} std={abs_std:.2e})")
+        return total_samples
+
+    def enable_timing(self, enabled: bool = True):
+        """Enable or disable per-layer wall-clock timing in all wrapped layers."""
+        for w in self.wrapped.values():
+            w._timing = enabled
+            w.elapsed_ms = 0.0
+
+    def get_layer_times(self) -> dict[str, float]:
+        """Return accumulated wall-clock time (ms) per wrapped layer."""
+        return {name: w.elapsed_ms for name, w in self.wrapped.items()}
+
     def remove(self):
         """Restore original layers."""
         unwrap_layers(self.model, self.wrapped)
         self.wrapped.clear()
 
     def save(self, path: Path | str | None = None, include_weights: bool = False):
-        """Save baselines for all wrapped layers.
-
-        Args:
-            path: Save path (default: data/detection/checksum_{model}.pt).
-            include_weights: Save full weight matrix for col-check and rerun correction.
+        """Save calibration to data/{model}/calibration/checksum.pt (always overwritten).
+        If include_weights, also saves to data/{model}/weights/checksum.pt.
         """
-        if path is None:
-            DETECTION_DIR.mkdir(parents=True, exist_ok=True)
-            path = DETECTION_DIR / f"baseline_{self.model_name}.pt"
+        p = Path(path) if path else calibration_path(self.model_name, "checksum")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {name: w.get_baseline(include_weights=False) for name, w in self.wrapped.items()}
+        torch.save(data, p)
+        print(f"Saved checksum calibration to {p} ({p.stat().st_size / 1024**2:.1f} MB)")
 
-        data = {
-            name: w.get_baseline(include_weights=include_weights)
-            for name, w in self.wrapped.items()
-        }
-
-        torch.save(data, path)
-        size_mb = Path(path).stat().st_size / (1024 * 1024)
-        print(f"Saved baseline to {path} ({size_mb:.1f} MB)")
+        if include_weights:
+            wp = weights_path(self.model_name, "checksum")
+            wp.parent.mkdir(parents=True, exist_ok=True)
+            wdata = {name: w.get_baseline(include_weights=True) for name, w in self.wrapped.items()}
+            torch.save(wdata, wp)
+            print(f"Saved checksum weights to {wp} ({wp.stat().st_size / 1024**2:.1f} MB)")
 
     def load(self, path: Path | str | None = None) -> bool:
-        """Load baselines.  Returns True if file found."""
-        if path is None:
-            path = DETECTION_DIR / f"baseline_{self.model_name}.pt"
-
-        if not Path(path).exists():
+        """Load calibration from data/{model}/calibration/checksum.pt.
+        Also loads weights from data/{model}/weights/checksum.pt if present.
+        Returns True if calibration file was found.
+        """
+        p = Path(path) if path else calibration_path(self.model_name, "checksum")
+        if not p.exists():
             return False
 
-        data = torch.load(path, weights_only=True)
+        data = torch.load(p, weights_only=False)
         for name, wrapper in self.wrapped.items():
             if name in data:
                 wrapper.set_baseline(data[name])
+        print(f"Loaded checksum calibration from {p} ({len(data)} layers)")
 
-        has_weights = any(
-            self.wrapped[n].clean_weights is not None for n in self.wrapped if n in data
-        )
-        print(f"Loaded baseline ({len(data)} layers, weights={has_weights})")
+        wp = weights_path(self.model_name, "checksum")
+        if wp.exists():
+            wdata = torch.load(wp, weights_only=False)
+            for name, wrapper in self.wrapped.items():
+                if name in wdata and "weights" in wdata[name]:
+                    wrapper.set_baseline({"weights": wdata[name]["weights"],
+                                          "bias": wdata[name].get("bias")})
+            print(f"Loaded checksum weights from {wp}")
 
-        if self.correction in ("rerun", "zero") and not has_weights:
-            print(
-                "Warning: correction enabled but no weights in baseline. "
-                "Col-check and rerun correction unavailable — save with include_weights=True."
-            )
+        has_weights = any(self.wrapped[n].clean_weights is not None for n in self.wrapped)
+        for name, w in self.wrapped.items():
+            if name in data:
+                rtol_str = f" rtol={w.rtol:.2e}" if w.rtol > 0 else ""
+                print(f"  {name}: atol={w.atol:.2e}{rtol_str}")
+
+        if self.correction in ("rerun", "zero", "correct") and not has_weights:
+            print("Warning: correction enabled but no weights found. Run save --weights first.")
 
         return True
 

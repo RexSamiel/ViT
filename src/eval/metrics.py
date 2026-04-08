@@ -1,9 +1,11 @@
 """Evaluation function and Results dataclass."""
 
+import statistics as _stlib
 import time
-import torch
 from dataclasses import dataclass, field
 from typing import Optional
+
+import torch
 
 from eval.accuracy import AccuracyTracker
 from eval.sdc import SDCTracker
@@ -36,8 +38,10 @@ class Results:
     faulty_layers: list[str] = field(default_factory=list)
 
     # Timing
-    elapsed_s: float = 0.0       # total inference loop wall-clock seconds
-    ms_per_sample: float = 0.0   # normalised per-sample latency
+    elapsed_s: float = 0.0  # total forward-pass wall-clock seconds
+    ms_per_sample: float = 0.0  # normalised per-sample latency
+    batch_times_ms: list[float] = field(default_factory=list)  # per-batch forward time
+    layer_ms: dict[str, float] = field(default_factory=dict)  # per-wrapper GPU time
 
     # Metadata
     samples: int = 0
@@ -50,7 +54,22 @@ class Results:
         print("EVALUATION RESULTS")
         print("-" * 60)
         print(f"Samples: {self.samples}")
-        print(f"Time:    {self.elapsed_s * 1000:.1f} ms total  |  {self.ms_per_sample:.3f} ms/sample")
+        print(
+            f"Time:    {self.elapsed_s * 1000:.1f} ms total  |  {self.ms_per_sample:.3f} ms/sample"
+        )
+        if self.batch_times_ms:
+            bms = self.batch_times_ms
+            print(
+                f"         per-batch: avg={_stlib.mean(bms):.2f} ms  "
+                f"min={min(bms):.2f}  max={max(bms):.2f}  ({len(bms)} batches)"
+            )
+        if self.layer_ms:
+            total_lms = sum(self.layer_ms.values())
+            print(
+                f"         layer total: {total_lms:.2f} ms across {len(self.layer_ms)} wrapped layers"
+            )
+            for lname, lms in sorted(self.layer_ms.items()):
+                print(f"           {lname}: {lms:.3f} ms")
         print()
         print(f"Accuracy:")
         print(f"  Top-1: {self.top1:.2f}%")
@@ -119,6 +138,10 @@ class Results:
         if self.faults_detected > 0:
             d["faults_detected"] = self.faults_detected
             d["faulty_layers"] = self.faulty_layers
+        if self.batch_times_ms:
+            d["batch_times_ms"] = self.batch_times_ms
+        if self.layer_ms:
+            d["layer_ms"] = self.layer_ms
         return d
 
 
@@ -144,45 +167,48 @@ def evaluate(model, detector=None) -> Results:
     if not batches:
         return Results()
 
-    # Pre-fetch all batches to the model's device so data loading is excluded from timing.
-    # This isolates inference + detection time from DataLoader/transfer overhead.
     device = next(net.parameters()).device
-    prefetched = [(imgs.to(device), lbls.to(device)) for imgs, lbls in batches]
+    cuda_avail = torch.cuda.is_available()
 
-    # Kernel warm-up: one forward pass so CUDA compiles kernels before the clock starts.
-    with torch.inference_mode():
-        net(prefetched[0][0])
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-    # Initialize trackers
     acc_tracker = AccuracyTracker()
     sdc_tracker = SDCTracker() if ff_logits else None
 
-    # Start clock after warm-up and after all data is on device
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    t_start = time.perf_counter()
+    for module in net.modules():
+        if hasattr(module, "elapsed_ms"):
+            module.elapsed_ms = 0.0
 
-    # Run evaluation
-    for batch_idx, (images, labels) in enumerate(prefetched):
+    elapsed_s = 0.0
+    batch_times_ms: list[float] = []
+
+    for batch_idx, (images, labels) in enumerate(batches):
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        t0 = time.perf_counter()
         with torch.inference_mode():
             outputs = net(images)
+        if cuda_avail:
+            torch.cuda.synchronize()
+        batch_s = time.perf_counter() - t0
+        elapsed_s += batch_s
+        batch_times_ms.append(batch_s * 1000.0)
 
-        # Accuracy
         acc_tracker.update_batch(outputs, labels)
 
-        # SDC (if fault-free logits available)
         if sdc_tracker and ff_logits:
             ff_batch = ff_logits.get_batch(batch_idx, len(images), images.device)
             sdc_tracker.update_batch(outputs, ff_batch)
 
-    # Stop clock after all CUDA work is done
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elapsed_s = time.perf_counter() - t_start
+    # Collect per-layer times from wrappers
+    layer_ms: dict[str, float] = {}
+    for module in net.modules():
+        if (
+            hasattr(module, "elapsed_ms")
+            and hasattr(module, "name")
+            and module.elapsed_ms > 0
+        ):
+            layer_ms[module.name] = round(module.elapsed_ms, 4)
 
-    # Gather results
     acc = acc_tracker.get_results()
 
     n_samples = acc["samples"]
@@ -191,6 +217,8 @@ def evaluate(model, detector=None) -> Results:
         top5=acc["top5_acc"],
         elapsed_s=elapsed_s,
         ms_per_sample=elapsed_s * 1000 / n_samples if n_samples else 0.0,
+        batch_times_ms=batch_times_ms,
+        layer_ms=layer_ms,
         samples=n_samples,
         batches=len(batches),
     )

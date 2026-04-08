@@ -18,7 +18,14 @@ class InjectedFault:
     original: float
     corrupted: float
     original_tensor: torch.Tensor
-    layer_ref: nn.Linear
+    layer_ref: nn.Module
+
+
+def _layer_weight(layer: nn.Module) -> torch.Tensor:
+    """Return the weight tensor of a layer (nn.Linear or detection wrapper)."""
+    w = layer.weight  # type: ignore[union-attr]
+    assert isinstance(w, torch.Tensor)
+    return w
 
 
 class WeightPool:
@@ -28,7 +35,7 @@ class WeightPool:
     giving each weight parameter an equal probability of being selected.
     """
 
-    def __init__(self, layers: dict[str, nn.Linear]):
+    def __init__(self, layers: dict[str, nn.Module]):
         """Build the weight pool from a dictionary of layers.
 
         Args:
@@ -43,7 +50,7 @@ class WeightPool:
 
         for name in self.layer_names:
             layer = layers[name]
-            size = layer.weight.numel()
+            size = _layer_weight(layer).numel()
             self._layer_sizes.append(size)
             self._cumulative_sizes.append(total)
             total += size
@@ -85,7 +92,7 @@ class WeightPool:
         local_idx = flat_idx - self._cumulative_sizes[layer_idx]
 
         # Convert flat local index to tuple index
-        weight_shape = layer.weight.shape
+        weight_shape = _layer_weight(layer).shape
         index_tuple = []
         for dim in reversed(weight_shape):
             index_tuple.append(local_idx % dim)
@@ -168,13 +175,23 @@ class Injector:
         self.fi_faults: int | None = None
         self.fi_ber: float | None = None
 
-    def _get_layers(self) -> dict[str, nn.Linear]:
+    def refresh_layers(self):
+        """Re-scan the model for target layers.
+
+        Call this after wrapping layers with a detector so the injector
+        targets the wrappers' weights_ext rather than the detached originals.
+        """
+        self._layers = self._get_layers()
+        self._pool = WeightPool(self._layers) if self._layers else None
+
+    def _get_layers(self) -> dict[str, nn.Module]:
         """Get target layers for injection."""
         layers = {}
         for name, module in self.model.named_modules():
-            # Handle detection wrappers - check for .original attribute
+            # Handle detection wrappers: inject through the wrapper's weight property
+            # so faults land in weights_ext (what forward() reads), not the detached original.
             if hasattr(module, "original") and isinstance(module.original, nn.Linear):
-                layers[name] = module.original
+                layers[name] = module
             elif isinstance(module, nn.Linear) and name:
                 if ".original" not in name:
                     layers[name] = module
@@ -193,7 +210,7 @@ class Injector:
     @property
     def layer_info(self) -> dict[str, int]:
         """Dictionary of layer names to their weight counts."""
-        return {name: layer.weight.numel() for name, layer in self._layers.items()}
+        return {name: _layer_weight(layer).numel() for name, layer in self._layers.items()}
 
     def inject(
         self,
@@ -245,7 +262,7 @@ class Injector:
 
         for name, idx in indices:
             layer = self._layers[name]
-            weight = layer.weight
+            weight = _layer_weight(layer)
             original = weight[idx].clone()
 
             corrupted, bit, _, _ = flip_bit(original, bit_range=self.bit_range)
@@ -277,7 +294,7 @@ class Injector:
             bit_start, bit_end = self.bit_range
 
         for name, layer in self._layers.items():
-            weight = layer.weight
+            weight = _layer_weight(layer)
             flat_weight = weight.view(-1)
 
             for w_idx in range(flat_weight.numel()):
@@ -313,7 +330,7 @@ class Injector:
         """Restore all injected faults to original values."""
         for fault in self.faults:
             with torch.no_grad():
-                fault.layer_ref.weight[fault.index] = fault.original_tensor
+                _layer_weight(fault.layer_ref)[fault.index] = fault.original_tensor
         self.faults.clear()
 
     def print_info(self):
