@@ -15,7 +15,8 @@ Adding new methods:
     4. Export from this __init__.py
 """
 
+from detection.baseline import Baseline
 from detection.checksum import Checksum
 from detection.checkone import DetectedFault, CheckOne
 
-__all__ = ["CheckOne", "Checksum", "DetectedFault"]
+__all__ = ["Baseline", "CheckOne", "Checksum", "DetectedFault"]

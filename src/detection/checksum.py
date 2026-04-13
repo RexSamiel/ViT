@@ -1,4 +1,3 @@
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,8 +32,10 @@ class _Wrapper(nn.Module):
     This lets us detect (row check) and localize (col check) weight faults.
     """
 
-    atol: float = 1e-2
-    rtol: float = 0.0
+    atol:     float = 1e-5   # row-check threshold
+    rtol:     float = 0.0
+    atol_col: float = 1e-2   # col-check threshold (separate: different BLAS noise profile)
+    rtol_col: float = 0.0
     weights_ext: torch.Tensor
 
     def __init__(self, original: nn.Linear, name: str):
@@ -58,8 +59,6 @@ class _Wrapper(nn.Module):
 
         self.correction: str | None = None
 
-        self.elapsed_ms: float = 0.0
-        self._timing: bool = False
 
     @property
     def weight(self):
@@ -81,8 +80,6 @@ class _Wrapper(nn.Module):
 
         B, N, C_in = x.shape
 
-        _t0 = time.perf_counter() if self._timing else 0.0
-
         x_token_sums = x.sum(dim=1, keepdim=True)
         x_ext = torch.cat([x, x_token_sums], dim=1)
 
@@ -97,11 +94,13 @@ class _Wrapper(nn.Module):
 
         actual_row = out_ext[:, :N, : self.C_out].sum(dim=-1)
 
-        self.row_faults = self._detect_rows(actual_row, golden_row)
-        self.col_faults = self._detect_cols(actual_col, x_token_sums)
-
         if getattr(self, "_calibrating_threshold", False):
-            self.threshold_calibrate_update(actual_row, golden_row)
+            self.row_faults = []
+            self.col_faults = []
+            self.threshold_calibrate_update(actual_row, golden_row, actual_col, x_token_sums)
+        else:
+            self.row_faults = self._detect_rows(actual_row, golden_row)
+            self.col_faults = self._detect_cols(actual_col, x_token_sums)
 
         if self.correction is not None:
             out = self._correct(out, x)
@@ -111,11 +110,6 @@ class _Wrapper(nn.Module):
 
         if squeeze:
             out = out.squeeze(1)
-
-        if self._timing:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            self.elapsed_ms += (time.perf_counter() - _t0) * 1000.0
 
         return out
 
@@ -151,7 +145,7 @@ class _Wrapper(nn.Module):
 
         golden_col = F.linear(x_token_sums.squeeze(1), self.clean_weights)
 
-        mask = ~torch.isclose(actual_col, golden_col, atol=self.atol, rtol=self.rtol)
+        mask = ~torch.isclose(actual_col, golden_col, atol=self.atol_col, rtol=self.rtol_col)
         if not mask.any():
             return []
         diffs = actual_col - golden_col
@@ -206,40 +200,45 @@ class _Wrapper(nn.Module):
         return out
 
     def threshold_calibrate_start(self):
-        """Start collecting clean-condition row-check noise for threshold calibration."""
-        self._cal_abs_values: list[float] = []
-        self._cal_rel_values: list[float] = []
+        """Start collecting clean-condition noise for both row and col checks."""
+        self._cal_abs_buf:     list[torch.Tensor] = []
+        self._cal_rel_buf:     list[torch.Tensor] = []
+        self._cal_abs_col_buf: list[torch.Tensor] = []
+        self._cal_rel_col_buf: list[torch.Tensor] = []
         self._calibrating_threshold = True
 
     def threshold_calibrate_update(
-        self, actual_row: torch.Tensor, golden_row: torch.Tensor
+        self, actual_row: torch.Tensor, golden_row: torch.Tensor,
+        actual_col: torch.Tensor, x_token_sums: torch.Tensor,
     ):
-        """Record per-batch absolute and relative noise for threshold estimation."""
-        diff = (actual_row - golden_row).abs()
-        self._cal_abs_values.append(diff.max().item())
-        self._cal_rel_values.append((diff / (golden_row.abs() + 1e-12)).max().item())
+        """Accumulate per-batch noise for row and col checks — stays on GPU."""
+        diff_row = (actual_row - golden_row).abs()
+        self._cal_abs_buf.append(diff_row.max())
+        self._cal_rel_buf.append((diff_row / (golden_row.abs() + 1e-12)).max())
 
-    def threshold_calibrate_end(self, margin: float = 1.0):
-        """Set atol and rtol using mean + margin * std of per-batch noise.
+        # Col-check noise: augmented-matmul path vs standalone F.linear path.
+        # Both use the same (clean) weights during calibration — the difference
+        # is purely floating-point noise from two different BLAS code paths.
+        golden_col = F.linear(x_token_sums.squeeze(1), self.weights_ext[: self.C_out])
+        diff_col = (actual_col - golden_col).abs()
+        self._cal_abs_col_buf.append(diff_col.max())
+        self._cal_rel_col_buf.append((diff_col / (golden_col.abs() + 1e-12)).max())
 
-        Uses the torch.allclose formula at inference: |diff| > atol + rtol * |signal|.
-        atol handles near-zero signals; rtol scales with signal magnitude.
-        margin is the number of standard deviations above the mean (same for both methods).
-        For CheckOne, rtol ≈ 0 (noise is data-independent); for Checksum, rtol > 0
-        for layers where noise scales with input magnitude.
-        """
-        if not self._cal_abs_values:
+    def threshold_calibrate_end(self, margin: float = 3.0):
+        """Set atol/rtol for row and col checks from mean + margin*std."""
+        if not self._cal_abs_buf:
             return
+        abs_vals = torch.stack(self._cal_abs_buf)
+        rel_vals = torch.stack(self._cal_rel_buf)
+        self.atol = float(abs_vals.mean() + margin * abs_vals.std(unbiased=False))
+        self.rtol = float(rel_vals.mean() + margin * rel_vals.std(unbiased=False))
 
-        def _mean_std(vals: list[float]) -> tuple[float, float]:
-            mean = sum(vals) / len(vals)
-            std = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
-            return mean, std
+        if self._cal_abs_col_buf:
+            abs_col = torch.stack(self._cal_abs_col_buf)
+            rel_col = torch.stack(self._cal_rel_col_buf)
+            self.atol_col = float(abs_col.mean() + margin * abs_col.std(unbiased=False))
+            self.rtol_col = float(rel_col.mean() + margin * rel_col.std(unbiased=False))
 
-        abs_mean, abs_std = _mean_std(self._cal_abs_values)
-        rel_mean, rel_std = _mean_std(self._cal_rel_values)
-        self.atol = abs_mean + margin * abs_std
-        self.rtol = rel_mean + margin * rel_std
         self._calibrating_threshold = False
 
     def get_baseline(self, include_weights: bool = False) -> dict:
@@ -247,7 +246,8 @@ class _Wrapper(nn.Module):
 
         With include_weights: full weight matrix (needed for col-check and correction).
         """
-        data: dict = {"atol": self.atol, "rtol": self.rtol}
+        data: dict = {"atol": self.atol, "rtol": self.rtol,
+                      "atol_col": self.atol_col, "rtol_col": self.rtol_col}
         if include_weights:
             data["weights"] = self.weight.data.cpu().clone()
             data["bias"] = (
@@ -264,6 +264,10 @@ class _Wrapper(nn.Module):
             self.atol = data["atol"]
         if "rtol" in data:
             self.rtol = data["rtol"]
+        if "atol_col" in data:
+            self.atol_col = data["atol_col"]
+        if "rtol_col" in data:
+            self.rtol_col = data["rtol_col"]
         if "weights" in data:
             w = data["weights"].to(device=device, dtype=dtype or self.weights_ext.dtype)
             self.clean_weights = w
@@ -369,18 +373,26 @@ class Checksum:
         for w in self.wrapped.values():
             w.threshold_calibrate_start()
 
-        limit_str = f"up to {max_batches} batches" if max_batches is not None else "full dataset"
+        limit_str = (
+            f"up to {max_batches} batches"
+            if max_batches is not None
+            else "full dataset"
+        )
         print(f"Calibrating threshold on {limit_str} (margin={margin})...")
 
         device = next(model.net.parameters()).device
         total_samples = 0
         batch_count = 0
+        report_every = max(1, (max_batches or 100) // 10)
         for images, _ in model.dataloader:
             images = images.to(device, non_blocking=True)
             with torch.inference_mode():
                 model.net(images)
             total_samples += len(images)
             batch_count += 1
+            if batch_count % report_every == 0:
+                limit = max_batches or "?"
+                print(f"  [{batch_count}/{limit}] {total_samples} samples", flush=True)
             if max_batches is not None and batch_count >= max_batches:
                 break
 
@@ -389,53 +401,63 @@ class Checksum:
 
         print(f"  Calibrated on {total_samples} samples ({batch_count} batches)")
         for name, w in self.wrapped.items():
-            abs_vals = getattr(w, "_cal_abs_values", [])
-            if abs_vals:
-                abs_mean = sum(abs_vals) / len(abs_vals)
-                abs_std = (sum((v - abs_mean) ** 2 for v in abs_vals) / len(abs_vals)) ** 0.5
-                print(f"  {name}: atol={w.atol:.2e} rtol={w.rtol:.2e}  (abs max={max(abs_vals):.2e} std={abs_std:.2e})")
+            if getattr(w, "_cal_abs_buf", []):
+                print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
         return total_samples
-
-    def enable_timing(self, enabled: bool = True):
-        """Enable or disable per-layer wall-clock timing in all wrapped layers."""
-        for w in self.wrapped.values():
-            w._timing = enabled
-            w.elapsed_ms = 0.0
-
-    def get_layer_times(self) -> dict[str, float]:
-        """Return accumulated wall-clock time (ms) per wrapped layer."""
-        return {name: w.elapsed_ms for name, w in self.wrapped.items()}
 
     def remove(self):
         """Restore original layers."""
         unwrap_layers(self.model, self.wrapped)
         self.wrapped.clear()
 
-    def save(self, path: Path | str | None = None, include_weights: bool = False):
-        """Save calibration to data/{model}/calibration/checksum.pt (always overwritten).
-        If include_weights, also saves to data/{model}/weights/checksum.pt.
+    def save(
+        self,
+        path: Path | str | None = None,
+        include_weights: bool = False,
+        save_calibration: bool = True,
+    ):
+        """Save calibration and/or weights.
+
+        save_calibration=True  writes data/{model}/calibration/checksum.pt.
+        include_weights=True   writes data/{model}/weights/checksum.pt.
+        Pass save_calibration=False when saving weights only — avoids overwriting
+        a previously calibrated checksum.pt with default (uncalibrated) values.
         """
-        p = Path(path) if path else calibration_path(self.model_name, "checksum")
-        p.parent.mkdir(parents=True, exist_ok=True)
-        data = {name: w.get_baseline(include_weights=False) for name, w in self.wrapped.items()}
-        torch.save(data, p)
-        print(f"Saved checksum calibration to {p} ({p.stat().st_size / 1024**2:.1f} MB)")
+        if save_calibration:
+            p = Path(path) if path else calibration_path(self.model_name, "checksum")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                name: w.get_baseline(include_weights=False)
+                for name, w in self.wrapped.items()
+            }
+            torch.save(data, p)
+            print(
+                f"Saved checksum calibration to {p} ({p.stat().st_size / 1024**2:.1f} MB)"
+            )
 
         if include_weights:
             wp = weights_path(self.model_name, "checksum")
             wp.parent.mkdir(parents=True, exist_ok=True)
-            wdata = {name: w.get_baseline(include_weights=True) for name, w in self.wrapped.items()}
+            wdata = {
+                name: w.get_baseline(include_weights=True)
+                for name, w in self.wrapped.items()
+            }
             torch.save(wdata, wp)
-            print(f"Saved checksum weights to {wp} ({wp.stat().st_size / 1024**2:.1f} MB)")
+            print(
+                f"Saved checksum weights to {wp} ({wp.stat().st_size / 1024**2:.1f} MB)"
+            )
 
-    def load(self, path: Path | str | None = None) -> bool:
+    def load(self, path: Path | str | None = None, verbose: bool = False) -> bool:
         """Load calibration from data/{model}/calibration/checksum.pt.
         Also loads weights from data/{model}/weights/checksum.pt if present.
-        Returns True if calibration file was found.
+        Raises RuntimeError if calibration or weights files are missing.
         """
         p = Path(path) if path else calibration_path(self.model_name, "checksum")
         if not p.exists():
-            return False
+            raise RuntimeError(
+                f"Checksum: no calibration file found at {p}.\n"
+                f"  Run: save --threshold  to calibrate first."
+            )
 
         data = torch.load(p, weights_only=False)
         for name, wrapper in self.wrapped.items():
@@ -444,24 +466,102 @@ class Checksum:
         print(f"Loaded checksum calibration from {p} ({len(data)} layers)")
 
         wp = weights_path(self.model_name, "checksum")
-        if wp.exists():
-            wdata = torch.load(wp, weights_only=False)
-            for name, wrapper in self.wrapped.items():
-                if name in wdata and "weights" in wdata[name]:
-                    wrapper.set_baseline({"weights": wdata[name]["weights"],
-                                          "bias": wdata[name].get("bias")})
-            print(f"Loaded checksum weights from {wp}")
+        if not wp.exists():
+            raise RuntimeError(
+                f"Checksum: no weights file found at {wp}.\n"
+                f"  Run: save --weights  to save weights for column check."
+            )
 
-        has_weights = any(self.wrapped[n].clean_weights is not None for n in self.wrapped)
-        for name, w in self.wrapped.items():
-            if name in data:
-                rtol_str = f" rtol={w.rtol:.2e}" if w.rtol > 0 else ""
-                print(f"  {name}: atol={w.atol:.2e}{rtol_str}")
+        wdata = torch.load(wp, weights_only=False)
+        for name, wrapper in self.wrapped.items():
+            if name in wdata and "weights" in wdata[name]:
+                wrapper.set_baseline(
+                    {
+                        "weights": wdata[name]["weights"],
+                        "bias": wdata[name].get("bias"),
+                    }
+                )
+        print(f"Loaded checksum weights from {wp}")
 
-        if self.correction in ("rerun", "zero", "correct") and not has_weights:
-            print("Warning: correction enabled but no weights found. Run save --weights first.")
+        if verbose:
+            for name, w in self.wrapped.items():
+                if name in data:
+                    print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
+
+        if self.correction in ("rerun", "zero", "correct") and not any(
+            self.wrapped[n].clean_weights is not None for n in self.wrapped
+        ):
+            print(
+                "Warning: correction enabled but no weights found. Run save --weights first."
+            )
 
         return True
+
+    def reset(self):
+        """Clear per-run fault lists in all wrappers (call before each run)."""
+        for w in self.wrapped.values():
+            w.row_faults = []
+            w.col_faults = []
+
+    def start_threshold_calibration(self):
+        """Activate threshold calibration hooks (fire on every subsequent net(images))."""
+        for w in self.wrapped.values():
+            w.threshold_calibrate_start()
+
+    def end_threshold_calibration(self, margin: float = 3.0):
+        """Finalise threshold calibration and print per-layer tolerances."""
+        for w in self.wrapped.values():
+            w.threshold_calibrate_end(margin=margin)
+        print(f"Checksum threshold calibration complete (margin={margin}):")
+        for name, w in self.wrapped.items():
+            if getattr(w, "_cal_abs_buf", []):
+                print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
+
+    def print_summary(self, layer_stats: dict[str, dict[str, int]]):
+        """Print aggregate detection table across all runs."""
+        if not layer_stats:
+            return
+        col = max(len(l) for l in layer_stats) + 2
+        print(
+            f"\nDetection Summary ({self.name}):\n"
+            f"  {'Layer':<{col}}  {'Injected':>8}  {'Detected':>8}  {'Rate':>7}  {'False+':>6}\n"
+            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}"
+        )
+        for layer in sorted(layer_stats):
+            s = layer_stats[layer]
+            inj = s["injected"]
+            det = s["detected"]
+            fp = s["false_positive"]
+            rate = f"{100 * det / inj:.1f}%" if inj else "  n/a"
+            print(f"  {layer:<{col}}  {inj:>8}  {det:>8}  {rate:>7}  {fp:>6}")
+
+        total_inj  = sum(s["injected"]       for s in layer_stats.values())
+        total_det  = sum(s["detected"]       for s in layer_stats.values())
+        total_fp   = sum(s["false_positive"] for s in layer_stats.values())
+        total_rate = f"{100 * total_det / total_inj:.1f}%" if total_inj else "  n/a"
+        print(
+            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}\n"
+            f"  {'TOTAL':<{col}}  {total_inj:>8}  {total_det:>8}  {total_rate:>7}  {total_fp:>6}"
+        )
+
+    def print_timing_summary(self, all_runs: list[dict]):
+        """Print timing: total and per-sample mean ± std across runs."""
+        timed = [r for r in all_runs if r.get("times_ms")]
+        if not timed:
+            return
+        per_run_ms  = [sum(r["times_ms"]) for r in timed]
+        per_run_mpb = [ms / len(r["times_ms"]) for ms, r in zip(per_run_ms, timed)]
+        total_ms = sum(per_run_ms)
+        avg_mpb  = sum(per_run_mpb) / len(per_run_mpb)
+        std_mpb  = (
+            (sum((v - avg_mpb) ** 2 for v in per_run_mpb) / (len(per_run_mpb) - 1)) ** 0.5
+            if len(per_run_mpb) > 1 else 0.0
+        )
+        print(
+            f"\nDetection Timing — {self.name} ({len(timed)} runs):\n"
+            f"  Total:         {total_ms:.1f} ms  ({total_ms / 1000:.2f} s)\n"
+            f"  Avg per batch: {avg_mpb:.4f} ms  ±{std_mpb:.4f} ms std"
+        )
 
     # Printing
 

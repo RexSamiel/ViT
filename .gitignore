@@ -30,6 +30,9 @@ results/*
 .scripts
 # Claude
 .claude/
+
+# Jujutsu VCS
+.jj/
 .onnx
 .scripts
 # Cache

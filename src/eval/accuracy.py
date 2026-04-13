@@ -20,23 +20,24 @@ class AccuracyTracker:
         """Process a batch and accumulate accuracy counts."""
         batch_size = labels.size(0)
 
-        nan_mask = torch.isnan(outputs).all(dim=1)
-        if nan_mask.any():
+        # Crash = any non-finite logit (NaN or Inf) — these count as wrong
+        crash_mask = ~torch.isfinite(outputs).all(dim=1)
+        if crash_mask.any():
             outputs = outputs.clone()
-            outputs[torch.isnan(outputs)] = float("-inf")
+            outputs[~torch.isfinite(outputs)] = float("-inf")
             labels = labels.clone()
-            labels[nan_mask] = -1  # Invalid label
+            labels[crash_mask] = -1  # Invalid label
 
         # Top-1 accuracy
         predictions = outputs.argmax(dim=1)
-        if nan_mask.any():
-            predictions[nan_mask] = 1001  # Invalid class
+        if crash_mask.any():
+            predictions[crash_mask] = 1001  # Invalid class — never matches any label
         self.top1_correct += (predictions == labels).sum().item()
 
         # Top-5 accuracy
         top5_preds = outputs.topk(5, dim=1)[1]
-        if nan_mask.any():
-            top5_preds[nan_mask] = 1001
+        if crash_mask.any():
+            top5_preds[crash_mask] = 1001
         top5_match = (labels.unsqueeze(1) == top5_preds).any(dim=1)
         self.top5_correct += top5_match.sum().item()
 

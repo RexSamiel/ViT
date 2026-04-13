@@ -151,7 +151,7 @@ class Injector:
         self,
         model,
         layers: str = "all",
-        bit_range: tuple[int, int] | None = None,
+        bit_range: list[int] | None = None,
     ):
         """
         Args:
@@ -288,17 +288,14 @@ class Injector:
         Each bit in each weight has independent probability `ber` of being flipped.
         This can result in 0, 1, or multiple bits flipped per weight.
         """
-        if self.bit_range is None:
-            bit_start, bit_end = 0, 31
-        else:
-            bit_start, bit_end = self.bit_range
+        bits = self.bit_range if self.bit_range is not None else list(range(32))
 
         for name, layer in self._layers.items():
             weight = _layer_weight(layer)
             flat_weight = weight.view(-1)
 
             for w_idx in range(flat_weight.numel()):
-                for bit in range(bit_start, bit_end + 1):
+                for bit in bits:
                     if random.random() < ber:
                         # Convert flat index to tuple index
                         idx_list = []

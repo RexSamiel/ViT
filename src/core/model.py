@@ -39,7 +39,8 @@ class Model:
         self.net = self._load_model()
         self.dataloader = self._create_dataloader()
         n_samples = config.batch_size * config.max_batches if config and config.max_batches else None
-        self._logits_cache = LogitsCache(name, n_samples)
+        split = "train" if (config and config.use_train) else "val"
+        self._logits_cache = LogitsCache(name, n_samples, split=split)
 
     def _load_model(self) -> nn.Module:
         """Load pretrained model."""
@@ -148,37 +149,73 @@ class Model:
 class LogitsCache:
     """Cache for fault-free logits (baseline for SDC computation)."""
 
-    def __init__(self, model_key: str, n_samples: int | None):
+    def __init__(self, model_key: str, n_samples: int | None, split: str = "val"):
         self.model_key = model_key
+        self._n_samples = n_samples
+        self._split = split
         self.data = None
-        if n_samples is not None:
-            path = logits_path(model_key, n_samples)
+        self._loaded = False
+
+    def _check_meta(self, data: dict, path) -> bool:
+        """Return False and print a rejection message if metadata mismatches."""
+        meta = data.get("meta")
+        if meta is None:
+            print(f"✗ Logits file {path} has no metadata — re-save with current code.")
+            return False
+        if meta.get("split") != self._split:
+            print(
+                f"✗ Logits split mismatch: file='{meta.get('split')}' "
+                f"expected='{self._split}'. Re-save with correct split."
+            )
+            return False
+        if self._n_samples is not None and meta.get("n_samples") != self._n_samples:
+            print(
+                f"✗ Logits sample count mismatch: file={meta.get('n_samples')} "
+                f"expected={self._n_samples}. Re-save with correct batch_size/max_batches."
+            )
+            return False
+        return True
+
+    def _load(self):
+        """Lazy-load logits on first access."""
+        if self._loaded:
+            return
+        self._loaded = True
+        if self._n_samples is not None:
+            path = logits_path(self.model_key, self._n_samples)
             if path.exists():
-                self.data = torch.load(path, weights_only=False)
-                print(f"✓ Fault-free logits loaded from {path}")
-            else:
-                print(f"  No logits found for {n_samples} samples ({path})")
+                data = torch.load(path, weights_only=False)
+                if self._check_meta(data, path):
+                    self.data = data
+                    print(f"✓ Fault-free logits loaded from {path}")
         else:
-            # max_batches=None means full dataset — scan for any available logits
             import re
             candidates = sorted(
-                (logits_path(model_key, 1).parent).glob("*_samples.pt"),
-                key=lambda p: int(re.search(r"(\d+)_samples", p.name).group(1)),
+                (logits_path(self.model_key, 1).parent).glob("*_samples.pt"),
+                key=lambda p: int(m.group(1)) if (m := re.search(r"(\d+)_samples", p.name)) else 0,
                 reverse=True,
             )
-            if candidates:
-                self.data = torch.load(candidates[0], weights_only=False)
-                print(f"✓ Fault-free logits loaded from {candidates[0]}")
+            for candidate in candidates:
+                data = torch.load(candidate, weights_only=False)
+                if self._check_meta(data, candidate):
+                    self.data = data
+                    print(f"✓ Fault-free logits loaded from {candidate}")
+                    break
 
     def save(self, logits: list, labels: list, n_samples: int):
         """Save fault-free logits to data/{model}/logits/{n_samples}_samples.pt."""
         path = logits_path(self.model_key, n_samples)
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"logits": torch.cat(logits), "labels": torch.cat(labels)}, path)
+        torch.save({
+            "logits": torch.cat(logits),
+            "labels": torch.cat(labels),
+            "meta": {"n_samples": n_samples, "split": self._split},
+        }, path)
         print(f"✓ Saved fault-free logits to {path}")
 
     def get_batch(self, batch_idx: int, batch_size: int, device: torch.device):
         """Get fault-free logits for a batch."""
+        self._load()
         if self.data is None:
             raise RuntimeError("Fault-free logits not available. Run baseline first.")
 
@@ -188,4 +225,5 @@ class LogitsCache:
 
     @property
     def available(self) -> bool:
+        self._load()
         return self.data is not None

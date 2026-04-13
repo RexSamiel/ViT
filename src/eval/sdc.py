@@ -57,7 +57,7 @@ class SDCTracker:
             valid_ff = faultfree[~crash_mask]
             valid_diff = valid_ff - valid_faulty
 
-            sdc_magnitude = valid_diff.abs().mean(dim=1)
+            sdc_magnitude = valid_diff.abs().median(dim=1).values
             self.sdc_magnitudes.append(sdc_magnitude.cpu())
 
             mean_relative_change = valid_diff.abs().mean(dim=1) / (valid_ff.abs().mean(dim=1) + 1e-10)
@@ -93,6 +93,8 @@ class SDCTracker:
         results: dict[str, float | int] = {
             "batches": self.total_batches,
             "crash_rate": crash_rate,
+            "crash_samples": self.crash_samples,
+            "total_samples": self.total_samples,
         }
 
         if self.sdc_rates:
@@ -101,7 +103,7 @@ class SDCTracker:
             results["logit_sdc_rate"] = 0.0
 
         if self.sdc_magnitudes:
-            results["msdc"] = torch.cat(self.sdc_magnitudes).mean().item()
+            results["msdc"] = torch.cat(self.sdc_magnitudes).median().item()
         else:
             results["msdc"] = 0.0
 
@@ -145,6 +147,8 @@ class SDCTracker:
         self.high_risk = 0
         self.medium_risk = 0
         self.safe = 0
+        self.total_crash_samples = 0
+        self.total_eval_samples = 0
 
     def aggregate_run(self, run_results: dict):
         """Aggregate a run's SDC results into multi-run statistics."""
@@ -186,6 +190,9 @@ class SDCTracker:
         else:
             self.safe += 1
 
+        self.total_crash_samples += run_results.get("crash_samples", 0)
+        self.total_eval_samples  += run_results.get("total_samples", 0)
+
     def get_summary(self) -> dict:
         """Return aggregated SDC summary."""
         std_top1 = (
@@ -210,6 +217,8 @@ class SDCTracker:
             "medium_risk": self.medium_risk,
             "safe": self.safe,
             "n_runs": self.n_runs,
+            "total_crash_samples": self.total_crash_samples,
+            "total_eval_samples": self.total_eval_samples,
         }
 
         # Add threshold averages
@@ -223,8 +232,11 @@ class SDCTracker:
         """Print aggregated SDC summary."""
         s = self.get_summary()
         print(f"\nSDC Metrics ({s['n_runs']} runs):")
+        if s["total_crash_samples"] > 0:
+            pct = 100.0 * s["total_crash_samples"] / s["total_eval_samples"] if s["total_eval_samples"] else 0.0
+            print(f"  Crashes:        {s['total_crash_samples']} samples ({pct:.1f}% of all samples)")
         print(f"  Logit SDC Rate: {s['avg_sdc_rate']:.2f}%")
-        print(f"  MSDC:           {s['avg_msdc']:.6f}")
+        print(f"  MSDC (median):  {s['avg_msdc']:.6f}")
         print()
         print(f"  Threshold-based SDC:")
         for threshold in self.THRESHOLDS:
