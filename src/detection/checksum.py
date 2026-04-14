@@ -157,15 +157,41 @@ class _Wrapper(nn.Module):
         if not faulty_feats:
             return out
 
+        # Build per-batch mapping of token -> row residual (error magnitude)
+        row_fault_map: dict[int, dict[int, float]] = {}
+        for b, tok, diff in self.row_faults:
+            row_fault_map.setdefault(b, {})[tok] = diff
+
+        # Build per-batch col fault map: {b: {feat: diff}}
+        col_fault_map: dict[int, dict[int, float]] = {}
+        for b, feat, diff in self.col_faults:
+            col_fault_map.setdefault(b, {})[feat] = diff
+
         if self.correction == "zero":
-            for b, feat, _ in self.col_faults:
-                out[b, :, feat] = 0.0
+            for b, feat_diffs in col_fault_map.items():
+                tok_diffs = row_fault_map.get(b, {})
+                for feat in feat_diffs:
+                    for tok in tok_diffs:
+                        out[b, tok, feat] = 0.0
+
         elif self.correction == "correct":
-            if self.clean_weights is not None:
-                out = self._locate_and_fix(out, x, faulty_feats)
-            else:
-                for b, feat, _ in self.col_faults:
-                    out[b, :, feat] = 0.0
+            # ApproxABFT algebraic correction — no weights required.
+            # For each fault at (b, tok, feat):
+            #   - Alone in its column (1 faulty token):  subtract col residual
+            #   - Alone in its row    (1 faulty feature): subtract row residual
+            #   - Multiple faults in both dimensions:    zero the element
+            for b, feat_diffs in col_fault_map.items():
+                tok_diffs = row_fault_map.get(b, {})
+                n_faulty_toks  = len(tok_diffs)
+                n_faulty_feats = len(feat_diffs)
+                for feat, col_diff in feat_diffs.items():
+                    for tok, row_diff in tok_diffs.items():
+                        if n_faulty_toks == 1:
+                            out[b, tok, feat] -= col_diff
+                        elif n_faulty_feats == 1:
+                            out[b, tok, feat] -= row_diff
+                        else:
+                            out[b, tok, feat] = 0.0
         else:
             if self.clean_weights is not None:
                 for feat in faulty_feats:
@@ -175,7 +201,10 @@ class _Wrapper(nn.Module):
                         out[:, :, feat] += self.clean_bias[feat]
             else:
                 for b, feat, _ in self.col_faults:
-                    out[b, :, feat] = 0.0
+                    faulty_toks = row_fault_map.get(b)
+                    if faulty_toks:
+                        for tok in faulty_toks:
+                            out[b, tok, feat] = 0.0
         return out
 
     def _locate_and_fix(
