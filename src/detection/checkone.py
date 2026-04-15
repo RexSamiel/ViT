@@ -130,17 +130,19 @@ class _Wrapper(nn.Module):
     def _detect_weights(
         self, weight_check: torch.Tensor
     ) -> list[tuple[int, int, float]]:
-        """Detect weight faults by comparing against saved weight sums.
+        """Detect weight faults by comparing each batch item against saved weight sums.
 
-        weight_check is batch-independent (ones @ W.T), so only one batch
-        item needs to be checked — all B items carry the same signal.
+        For persistent weight faults all batch items carry the same signal, but
+        checking per-batch also catches transient computation faults that only
+        affect a single batch item.
         """
-        actual = weight_check[0]
-        mask = ~torch.isclose(actual, self.weight_sums, atol=self.atol, rtol=self.rtol)
+        # weight_sums: [C_out] → broadcast against weight_check: [B, C_out]
+        mask = ~torch.isclose(weight_check, self.weight_sums.unsqueeze(0), atol=self.atol, rtol=self.rtol)
         if not mask.any():
             return []
-        diffs = actual - self.weight_sums
-        return [(0, int(feat), float(diffs[feat])) for feat in mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
+        diffs = weight_check - self.weight_sums.unsqueeze(0)
+        indices = mask.nonzero(as_tuple=False)
+        return [(int(r[0]), int(r[1]), float(diffs[r[0], r[1]])) for r in indices]
 
     def _detect_input(self, input_check: torch.Tensor) -> list[tuple[int, int, float]]:
         """Detect input faults by comparing against calibrated range.
@@ -187,13 +189,9 @@ class _Wrapper(nn.Module):
     def _zero_output_columns(
         self, out: torch.Tensor, faults: list[tuple[int, int, float]]
     ) -> torch.Tensor:
-        """Zero out corrupted output columns (one column per faulty weight row).
-
-        Weight faults affect all batch items equally (shared weights), so zero
-        the entire column across all batch items regardless of reported b.
-        """
-        for _, feat, _ in faults:
-            out[:, :, feat] = 0.0
+        """Zero out corrupted output columns per affected batch item."""
+        for b, feat, _ in faults:
+            out[b, :, feat] = 0.0
         return out
 
     def _locate_and_fix(
@@ -211,11 +209,16 @@ class _Wrapper(nn.Module):
              (one input column × scalar — no dot product over C_in).
         """
         assert self.clean_weights is not None
-        for feat in {feat for _, feat, _ in faults}:
+        # Group by feat, collect affected batch items
+        feat_batches: dict[int, list[int]] = {}
+        for b, feat, _ in faults:
+            feat_batches.setdefault(feat, []).append(b)
+        for feat, batches in feat_batches.items():
             diff_row = self.weight[feat] - self.clean_weights[feat]
             j = int(diff_row.abs().argmax().item())
             delta = diff_row[j].item()
-            out[:, :, feat] -= x[:, :, j] * delta
+            for b in batches:
+                out[b, :, feat] -= x[b, :, j] * delta
         return out
 
     def _zero_output_rows(
@@ -235,11 +238,15 @@ class _Wrapper(nn.Module):
         """Recompute faulty output features using clean weights."""
         clean_weights = self.clean_weights
         assert clean_weights is not None
-        for feat in {feat for _, feat, _ in faults}:
-            corrected = F.linear(x, clean_weights[feat : feat + 1, :])
-            out[:, :, feat] = corrected.squeeze(-1)
-            if self.clean_bias is not None:
-                out[:, :, feat] += self.clean_bias[feat]
+        feat_batches: dict[int, list[int]] = {}
+        for b, feat, _ in faults:
+            feat_batches.setdefault(feat, []).append(b)
+        for feat, batches in feat_batches.items():
+            for b in batches:
+                corrected = F.linear(x[b:b+1], clean_weights[feat : feat + 1, :])
+                out[b, :, feat] = corrected.squeeze(0).squeeze(-1)
+                if self.clean_bias is not None:
+                    out[b, :, feat] += self.clean_bias[feat]
         return out
 
     def _rerun_inputs_local(
