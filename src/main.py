@@ -19,7 +19,6 @@ Constraints that must be respected:
 Entry point: run(global_args, commands)
 """
 
-# test
 import json
 import math
 import random
@@ -313,7 +312,7 @@ def run(global_args, commands):
             cs.remove()
 
     if global_args.output and all_runs:
-        _save_json(global_args.output, all_runs, global_args, fi_args, acc, sdc)
+        _save_json(global_args.output, all_runs, global_args, fi_args, hr_args, acc, sdc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,7 +362,7 @@ def _print_timing(all_runs: list[dict], fi_args, global_args):
         )
 
 
-def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, acc, sdc):
+def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc):
     """Append an aggregated summary to the output JSON file."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -377,19 +376,38 @@ def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, acc
         except (json.JSONDecodeError, OSError):
             pass
 
-    existing.append(_build_json_summary(all_runs, global_args, fi_args, acc, sdc))
+    existing.append(_build_json_summary(all_runs, global_args, fi_args, hr_args, acc, sdc))
 
     with open(path, "w") as f:
         json.dump(existing, f, indent=2)
     print(f"\nSaved results to {output_path}")
 
 
-def _build_json_summary(all_runs: list[dict], global_args, fi_args, acc, sdc) -> dict:
+def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc) -> dict:
     """Build the plot-compatible aggregated summary dict."""
+    import torch as _torch
     n: int = len(all_runs)
     summary: dict[str, object] = {"total_runs": n}
 
-    # Accuracy
+    # ── Run identity metadata ─────────────────────────────────────────────────
+    gpu_name = (
+        _torch.cuda.get_device_name(0)
+        if _torch.cuda.is_available()
+        else "cpu"
+    )
+    method = getattr(hr_args, "method", None) if hr_args else None
+    correction = getattr(hr_args, "correction", None) if hr_args else None
+    bit_range_str = getattr(fi_args, "bit_range", None) if fi_args else None
+
+    summary["gpu"] = gpu_name
+    summary["model"] = global_args.model
+    summary["method"] = method
+    summary["correction"] = correction
+    summary["bit_range"] = bit_range_str
+    summary["batch_size"] = global_args.batch_size
+    summary["max_batches"] = global_args.max_batches
+
+    # ── Accuracy ──────────────────────────────────────────────────────────────
     if acc:
         s = acc.get_summary()
         summary.update(
@@ -401,25 +419,24 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, acc, sdc) ->
             }
         )
 
-    # Timing
-    per_run_mps = [
-        sum(r["times_ms"]) / (r.get("accuracy", {}).get("samples", 1) or 1)
-        for r in all_runs
-        if r.get("times_ms")
-    ]
-    if per_run_mps:
-        avg_mps = sum(per_run_mps) / len(per_run_mps)
-        std_mps = (
-            math.sqrt(
-                sum((v - avg_mps) ** 2 for v in per_run_mps) / (len(per_run_mps) - 1)
-            )
-            if len(per_run_mps) > 1
-            else 0.0
-        )
-        summary["avg_ms_per_sample"] = avg_mps
-        summary["std_ms_per_sample"] = std_mps
+    # ── Timing ────────────────────────────────────────────────────────────────
+    all_batch_ms = [t for r in all_runs for t in r.get("times_ms", [])]
+    per_run_total_ms = [sum(r["times_ms"]) for r in all_runs if r.get("times_ms")]
 
-    # SDC
+    if all_batch_ms:
+        avg_batch = sum(all_batch_ms) / len(all_batch_ms)
+        std_batch = (
+            math.sqrt(sum((v - avg_batch) ** 2 for v in all_batch_ms) / (len(all_batch_ms) - 1))
+            if len(all_batch_ms) > 1 else 0.0
+        )
+        summary["batch_speed_mean_ms"] = round(avg_batch, 4)
+        summary["batch_speed_std_ms"] = round(std_batch, 4)
+
+    if per_run_total_ms:
+        avg_total = sum(per_run_total_ms) / len(per_run_total_ms)
+        summary["total_time_ms"] = round(avg_total, 1)
+
+    # ── SDC ───────────────────────────────────────────────────────────────────
     if sdc:
         s = sdc.get_summary()
         sdc_vals = [r["sdc"]["logit_sdc_rate"] for r in all_runs if r.get("sdc")]
@@ -452,7 +469,7 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, acc, sdc) ->
             key = f"avg_sdc_{pct}pct"
             summary[key] = s.get(key, 0.0)
 
-    # Config metadata
+    # ── FI config metadata ────────────────────────────────────────────────────
     sub_component = getattr(fi_args, "component", None) if fi_args else None
     block_idx = getattr(fi_args, "block", None) if fi_args else None
     component = (
@@ -463,7 +480,6 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, acc, sdc) ->
         else None
     )
     summary["config"] = {
-        "model": global_args.model,
         "sub_component": sub_component,
         "block_idx": block_idx,
         "component": component,
