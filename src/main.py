@@ -433,8 +433,7 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
         summary["batch_speed_std_ms"] = round(std_batch, 4)
 
     if per_run_total_ms:
-        avg_total = sum(per_run_total_ms) / len(per_run_total_ms)
-        summary["total_time_ms"] = round(avg_total, 1)
+        summary["total_time_ms"] = round(sum(per_run_total_ms), 1)
 
     # ── SDC ───────────────────────────────────────────────────────────────────
     if sdc:

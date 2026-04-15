@@ -18,7 +18,7 @@ set -euo pipefail
 PYTHON="${PYTHON:-.venv/bin/python}"
 
 # Single output file where all run results are appended
-OUTPUT_FILE="results/detection_results/Detection measurements/runs.json"
+OUTPUT_FILE="results/detection_results/detection_measurements/runs.json"
 
 # Folder containing the database JSONs and merge.py
 DB_DIR="results/detection_results"
