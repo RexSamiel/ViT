@@ -419,6 +419,19 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
             }
         )
 
+    # ── Detection ────────────────────────────────────────────────────────────
+    detection_runs = [r["detection"] for r in all_runs if r.get("detection")]
+    if detection_runs:
+        detected = sum(1 for d in detection_runs if d.get("weight_faults", 0) > 0)
+        summary["detection_accuracy"] = round(100.0 * detected / len(detection_runs), 1)
+        input_counts = [d.get("input_faults", 0) for d in detection_runs]
+        summary["input_detections"] = sum(input_counts) if any(input_counts) else None
+        summary["false_positives"] = None
+    else:
+        summary["detection_accuracy"] = None
+        summary["input_detections"] = None
+        summary["false_positives"] = None
+
     # ── Timing ────────────────────────────────────────────────────────────────
     all_batch_ms = [t for r in all_runs for t in r.get("times_ms", [])]
     per_run_total_ms = [sum(r["times_ms"]) for r in all_runs if r.get("times_ms")]
