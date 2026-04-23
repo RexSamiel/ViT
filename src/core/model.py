@@ -47,6 +47,9 @@ class Model:
         if self.verbose:
             print(f"Loading model: {self.model_name}")
 
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+
         model = timm.create_model(self.model_name, pretrained=True)
         model = model.to(self.config.device)
         model.eval()
@@ -213,6 +216,12 @@ class LogitsCache:
         }, path)
         print(f"✓ Saved fault-free logits to {path}")
 
+    def preload_to_device(self, device: torch.device):
+        """Move all logits to GPU once — avoids per-batch CPU→GPU transfers."""
+        self._load()
+        if self.data is not None and self.data["logits"].device != device:
+            self.data["logits"] = self.data["logits"].to(device)
+
     def get_batch(self, batch_idx: int, batch_size: int, device: torch.device):
         """Get fault-free logits for a batch."""
         self._load()
@@ -221,7 +230,8 @@ class LogitsCache:
 
         start = batch_idx * batch_size
         end = start + batch_size
-        return self.data["logits"][start:end].to(device)
+        t = self.data["logits"][start:end]
+        return t if t.device == device else t.to(device)
 
     @property
     def available(self) -> bool:

@@ -79,7 +79,7 @@ def run(global_args, commands):
         from injection import Injector
 
         bit_range = parse_bit_range(fi_args.bit_range) if fi_args.bit_range else None
-        injector = Injector(model, layers=fi_args.layers, bit_range=bit_range)
+        injector = Injector(model, layers=fi_args.layers, bit_range=bit_range, block_idx=fi_args.block, layer_prefix=getattr(fi_args, "layer_prefix", None))
         injector.fi_faults = fi_args.faults
         injector.fi_ber = fi_args.ber
         if detector:
@@ -93,6 +93,8 @@ def run(global_args, commands):
         if (model.ff_logits.available and not save_args and not pa_args)
         else None
     )
+    if ff_logits is not None:
+        ff_logits.preload_to_device(device)
 
     # Accumulators — active only in evaluation modes
     from eval.accuracy import AccuracyTracker
@@ -126,7 +128,9 @@ def run(global_args, commands):
             if injector.fi_ber is not None:
                 injector.inject(ber=injector.fi_ber)
             else:
-                injector.inject(count=injector.fi_faults or 1)
+                count = injector.fi_faults if injector.fi_faults is not None else 1
+                if count > 0:
+                    injector.inject(count=count)
             if global_args.info:
                 injector.print_info()
 
@@ -294,18 +298,15 @@ def run(global_args, commands):
                     max_batches=max_batches,
                     inputs=save_args.inputs,
                     threshold=save_args.threshold,
-                    margin=save_args.margin,
                 )
-            co.save(include_weights=save_args.weights, save_calibration=do_calib)
+            co.save(save_calibration=do_calib)
             co.remove()
 
             # Calibrate and save Checksum
             print("\nCalibrating Checksum...")
             cs = Checksum(model, layers=save_args.layers)
             if save_args.threshold:
-                cs.calibrate_threshold(
-                    model, max_batches=max_batches, margin=save_args.margin
-                )
+                cs.calibrate_threshold(model, max_batches=max_batches)
             cs.save(
                 include_weights=save_args.weights, save_calibration=save_args.threshold
             )
@@ -475,6 +476,8 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
                 "medium_risk_pct": 100.0 * s["medium_risk"] / n if n else 0.0,
                 "safe_count": s["safe"],
                 "safe_pct": 100.0 * s["safe"] / n if n else 0.0,
+                "total_crash_samples": s["total_crash_samples"],
+                "crash_pct": 100.0 * s["total_crash_samples"] / s["total_eval_samples"] if s["total_eval_samples"] else 0.0,
             }
         )
         for pct in [1, 5, 10, 15, 20, 25, 50]:
@@ -491,9 +494,11 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
         if sub_component in ("fc1", "fc2")
         else None
     )
+    layer_prefix = getattr(fi_args, "layer_prefix", None) if fi_args else None
     summary["config"] = {
         "sub_component": sub_component,
         "block_idx": block_idx,
+        "layer_prefix": layer_prefix,
         "component": component,
     }
 

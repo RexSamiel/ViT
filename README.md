@@ -1,447 +1,252 @@
 # ViT Fault Injection and Detection Framework
 
-A modular framework for fault injection experiments, analysis and detection on Vision Transformers.
-
-## Features
-
-- **Fault Injection**: Bit-flip fault injection into model weights with configurable bit ranges
-- **Multiple Detection Methods**: Neuro checker, ABFT checksums, softmax-mean checksums
-- **Plugin Architecture**: Add new detection methods without modifying core code
-- **Parameter Analysis**: Analyze weight distributions and activation ranges across model layers
-- **Evaluation Metrics**: Top-1/Top-5 accuracy, SDC (Silent Data Corruption) rates
-- **CLI and API**: Use from command line or as a Python library
+A research framework for fault injection experiments, parameter analysis, and ABFT-based fault detection on Vision Transformers (ViT, DeiT, Swin).
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone <repo-url>
 cd ViT
 
-# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
-pip install -r requirements.txt
+pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cu124
+```
+
+Set the ImageNet path via environment variable (default: `/run/media/samiel/K_USB_256/imagenet/`):
+
+```bash
+export IMAGENET_PATH=/path/to/imagenet
 ```
 
 ## Quick Start
 
-### Python API
-
-```python
-from core.model import Model
-from detection import create_detector
-from injection import Injector
-from eval import evaluate
-
-# Load model
-model = Model("vit_tiny")
-
-# Setup detection and injection
-detector = create_detector(model, method="neuro", layers="fc1")
-injector = Injector(model, layers="fc1")
-
-# Inject fault and evaluate
-injector.inject(count=1)
-results = evaluate(model, detector)
-
-# Print results
-results.print()
-detector.print_results()
-
-# Restore original weights
-injector.restore()
-detector.remove()
-```
-
-### CLI
-
 ```bash
-# Basic evaluation
-python -m cli -m vit_tiny
+# Run 100 fault injection experiments on vit_tiny with CheckOne detection and zero correction
+python -m cli -m vit_tiny -r 100 -w 10 --max_batches 1 --batch_size 100 \
+  fi --faults 1 --bit_range 0,31 --fault_seed 1 \
+  hr --method checkone --detect all --correction zero
 
-# Fault injection with detection
-python -m cli -m vit_tiny hr --detect fc1 --inject fc1 --method neuro
-
-# Multiple runs with output
-python -m cli -m vit_tiny hr --detect fc1 --inject fc1 --repeat 10 -o results.json
+# Save calibration data before running detection
+python -m cli -m vit_tiny save --inputs --threshold --weights --logits
 ```
-
-## API Reference
-
-### Detection
-
-The detection system uses a plugin architecture. Methods self-register and are automatically available.
-
-```python
-from detection import create_detector, list_methods, Detector
-
-# See available methods
-print(list_methods())  # ['neuro', 'checksum', 'softmean']
-
-# Create detector (recommended)
-detector = create_detector(
-    model,
-    method="neuro",      # Detection method
-    layers="fc1",        # Layer filter
-    threshold=0.1,       # Detection threshold
-)
-
-# Or use backwards-compatible Detector class
-detector = Detector(model, method="checksum", layers="fc1", threshold=1e-3)
-
-# After running inference...
-faults = detector.faults_found      # List of faulty layer names
-results = detector.check()          # Dict: layer_name -> bool
-detector.print_results()            # Print detailed results
-detector.remove()                   # Restore original layers
-```
-
-#### Detection Methods
-
-| Method | Target | Description |
-|--------|--------|-------------|
-| `neuro` | Linear layers | Extra neuron checker - compares checker output vs mean of regular outputs |
-| `checksum` | Linear layers | Classical ABFT row/column checksums |
-| `softmean` | Attention modules | Softmax-mean checksums for Q/K matrices |
-
-### Injection
-
-```python
-from injection import Injector
-
-injector = Injector(
-    model,
-    layers="fc1",              # Layer filter
-    bit_range=(0, 31),         # Optional: restrict bit positions
-)
-
-# Inject faults
-injector.inject(count=1)       # Inject N random bit-flips
-injector.print_info()          # Show injection details
-
-# Get fault info
-info = injector.get_info()     # List of fault dictionaries
-print(injector.count)          # Number of active faults
-
-# Restore
-injector.restore()             # Restore all original values
-```
-
-### Model
-
-```python
-from core.model import Model, ModelConfig
-
-# With default config
-model = Model("vit_tiny")
-
-# With custom config
-config = ModelConfig(
-    batch_size=100,
-    max_batches=10,
-    data_root="/path/to/imagenet",
-    use_train=False,           # Use validation set
-)
-model = Model("vit_base", config=config)
-
-# Access internals
-net = model.net                # The actual nn.Module
-batches = model.get_batches()  # Cached data batches
-```
-
-### Evaluation
-
-```python
-from eval import evaluate, Results
-
-# Basic evaluation
-results = evaluate(model)
-
-# With detection
-results = evaluate(model, detector)
-
-# Access metrics
-print(f"Top-1: {results.top1}%")
-print(f"Top-5: {results.top5}%")
-print(f"SDC Rate: {results.sdc_rate}%")
-print(f"Faults Detected: {results.faults_detected}")
-
-results.print()  # Formatted output
-```
-
-### Analysis
-
-Analyze model activations and weight distributions:
-
-```python
-from analysis import ActivationAnalyzer, WeightAnalyzer
-
-# Activation analysis - captures min/max ranges and distributions during inference
-analyzer = ActivationAnalyzer(model, include_histogram=True)
-results = analyzer.run(num_batches=10)
-analyzer.save("results/activations_vit_tiny.json")
-analyzer.remove()  # Remove hooks
-
-# Weight analysis - analyzes parameter distributions
-analyzer = WeightAnalyzer(model)
-results = analyzer.run()
-analyzer.save("results/weights_vit_tiny.json")
-```
-
-#### ActivationAnalyzer
-
-Hooks into model layers during inference to capture activation statistics.
-
-```python
-from analysis import ActivationAnalyzer
-
-analyzer = ActivationAnalyzer(
-    model,
-    include_histogram=True,   # Build distribution histograms
-    histogram_bins=1000,      # Number of histogram bins
-)
-
-# Run on multiple batches
-results = analyzer.run(num_batches=10)
-
-# Results structure:
-# {
-#   "layers": {layer_idx: {name, min, max, component, op_type, shape}},
-#   "block_aggregated": {block_idx: {mha: {min, max}, mlp: {min, max}}},
-#   "distributions": {component: {bin_centers, counts, data_range}},
-#   "statistics": {total_layers, num_blocks}
-# }
-
-# Access layer data
-for idx, layer in results["layers"].items():
-    print(f"{layer['name']}: [{layer['min']:.4f}, {layer['max']:.4f}]")
-
-# Save to file
-analyzer.save("activations.json")
-
-# Clean up hooks
-analyzer.remove()
-```
-
-#### WeightAnalyzer
-
-Analyzes model weight parameters without requiring inference.
-
-```python
-from analysis import WeightAnalyzer
-
-analyzer = WeightAnalyzer(model, histogram_bins=1000)
-results = analyzer.run()
-
-# Results structure:
-# {
-#   "parameters": {param_idx: {name, component, shape, min, max, mean, std}},
-#   "distributions": {component: {bin_centers, counts, data_range}},
-#   "component_stats": {component: {count, min, max}},
-#   "statistics": {total_parameters, total_values, num_blocks}
-# }
-
-# Access parameter statistics
-for idx, param in results["parameters"].items():
-    print(f"{param['name']}: mean={param['mean']:.4f}, std={param['std']:.4f}")
-
-# Component breakdown
-for comp, stats in results["component_stats"].items():
-    print(f"{comp}: {stats['count']} params, range=[{stats['min']:.4f}, {stats['max']:.4f}]")
-
-analyzer.save("weights.json")
-```
-
-#### Component Classification
-
-Both analyzers classify layers/parameters into components:
-
-| Component | Description |
-|-----------|-------------|
-| `mha` / `attention` | Multi-head attention layers |
-| `mlp` | MLP/FFN layers |
-| `norm` | Layer normalization |
-| `patch_embed` | Patch embedding layer |
-| `embedding` | CLS token, position embeddings |
-| `classifier` / `output` | Classification head |
 
 ## CLI Reference
 
-### Common Arguments
+The CLI uses chained subcommands. Global options come first, then one or more subcommands:
 
 ```bash
-python -m cli -m <model> [options] <mode>
-
-Options:
-  -m, --model       Model name (required)
-  -b, --batch_size  Batch size (default: 100)
-  --max_batches     Limit number of batches
-  --data            Dataset split: train/val (default: val)
-  --seed            Random seed for reproducibility
+python -m cli -m <model> [global options] <subcommand> [subcommand options] ...
 ```
 
-### HR Mode (Hardware Resilience)
+### Global Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-m, --model` | required | Model name (see supported models) |
+| `-b, --batch_size` | 100 | Batch size |
+| `--max_batches` | 1 | Number of batches per run |
+| `-r, --repeat` | 1 | Number of experiment repetitions |
+| `-w, --warmup` | 0 | Silent GPU warmup passes before timing |
+| `--data` | val | Dataset split: `train` or `val` |
+| `--seed` | random | Global random seed |
+| `--info` | false | Verbose per-run output |
+| `--time` | false | Show total script execution time |
+| `-o, --output` | none | Output JSON file path |
+
+### `fi` — Fault Injection
+
+Injects bit-flip faults into model weights.
 
 ```bash
-python -m cli -m vit_tiny hr [options]
-
-Options:
-  --detect LAYERS   Enable detection on layers
-  --method METHOD   Detection method: neuro, checksum, softmean
-  --threshold FLOAT Detection threshold
-  --inject LAYERS   Enable injection on layers
-  --faults N        Number of faults to inject (default: 1)
-  --bit_range M,N   Restrict bit flip range
-  --repeat N        Number of experiment runs
-  -o, --output      Output file for results (JSON)
+python -m cli -m vit_tiny fi [options]
 ```
 
-Examples:
+| Flag | Description |
+|------|-------------|
+| `--layers` | Target layers: `all`, `fc1`, `fc2`, `qkv`, `proj` (default: `all`) |
+| `--faults N` | Number of bit-flip faults to inject |
+| `--ber FLOAT` | Bit error rate (alternative to `--faults`) |
+| `--bit_range LO,HI` | Restrict flips to bit range, e.g. `23,31` or `0,31^30` to exclude bit 30 |
+| `--fault_seed N` | RNG seed for fault injection — same seed across runs injects identical faults |
+| `--time` | Show per-run inference timing |
+
+Bit range modes used in experiments:
+
+| Mode | Flag | Bits affected |
+|------|------|---------------|
+| Unrestricted | `0,31` | All 32 bits |
+| Without bit 30 | `0,31^30` | All except bit 30 |
+| Without mantissa | `23,31` | Exponent and sign bits only |
+
+### `hr` — Hardware Resilience (Detection)
+
+Wraps model layers with ABFT-based fault detection and optional correction.
+
 ```bash
-# Neuro detection on fc1 layers
-python -m cli -m vit_tiny hr --detect fc1 --method neuro --inject fc1
-
-# Checksum detection with custom threshold
-python -m cli -m vit_tiny hr --detect all --method checksum --threshold 1e-4
-
-# Softmean on attention modules
-python -m cli -m vit_tiny hr --detect attn --method softmean --inject qkv
-
-# Multiple runs with JSON output
-python -m cli -m vit_base hr --detect fc1 --inject fc1 --repeat 100 -o results.json
+python -m cli -m vit_tiny fi --faults 1 hr [options]
 ```
 
-### PA Mode (Parameter Analysis)
+| Flag | Description |
+|------|-------------|
+| `--method` | Detection method: `checkone`, `checksum`, `baseline` (default: `checkone`) |
+| `--detect` | Layers to wrap: `all`, `fc1`, `fc2`, `qkv`, `proj` |
+| `--correction` | Correction mode: `zero`, `rerun`, `correct` |
+| `--time` | Show per-layer detection timing |
 
-Analyze model activations and weight distributions:
+Detection methods:
+
+| Method | Mechanism | GPU-portable |
+|--------|-----------|--------------|
+| `checkone` | Row-sum weight check — compares `ones @ W.T` against saved sums. Input-independent. | Yes |
+| `checksum` | ApproxABFT row and column checksums — row check detects faults, col check localises which output feature | No (threshold depends on GPU BLAS noise) |
+| `baseline` | No detection — measures overhead baseline | — |
+
+Correction modes:
+
+| Mode | Behaviour |
+|------|-----------|
+| `zero` | Zero the entire faulty output column |
+| `rerun` | Recompute the faulty output feature from saved clean weights |
+| `correct` | Algebraic correction using weight diff (simulation only) |
+
+### `save` — Save Calibration Data
+
+Pre-computes and saves detection baselines. Must be run before `hr`.
+
+```bash
+python -m cli -m vit_tiny save [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--logits` | Save fault-free logits for SDC metrics |
+| `--inputs` | Calibrate input fault detection range (CheckOne) |
+| `--threshold` | Calibrate detection thresholds via 3-sigma rule (both methods) |
+| `--weights` | Save full weight matrices for col-check and rerun correction |
+| `--margin FLOAT` | Sigma multiplier for threshold calibration (default: 3.0) |
+| `--layers` | Layers to calibrate (default: `all`) |
+
+Typical full calibration:
+
+```bash
+python -m cli -m vit_tiny --max_batches 100 save --inputs --threshold --weights --logits
+```
+
+Saved files (under `data/{model}/`):
+
+| File | Contents |
+|------|----------|
+| `calibration/checkone.pt` | Weight sums, input ranges, atol/rtol per layer |
+| `calibration/checksum.pt` | Row and col check atol/rtol per layer |
+| `weights/checkone.pt` | Full weight matrices for rerun correction |
+| `weights/checksum.pt` | Full weight matrices for col check and rerun correction |
+| `logits/{n}_samples.pt` | Fault-free logits for SDC comparison |
+
+### `pa` — Parameter Analysis
+
+Analyzes weight distributions and activation ranges.
 
 ```bash
 python -m cli -m vit_tiny pa [options]
-
-Options:
-  --type TYPE       Analysis type: activations, weights, both (default: activations)
-  -o, --output      Output path/directory for JSON results
 ```
 
-Examples:
+| Flag | Description |
+|------|-------------|
+| `--type` | `activations`, `weights`, or `both` (default: `activations`) |
+| `-o, --output` | Output path for JSON results |
+
+## Running Experiments
+
+A batch experiment script is provided at `scripts/run_detection.sh`. Configure the flags at the top:
+
 ```bash
-# Analyze activation ranges during inference
-python -m cli -m vit_tiny --max_batches 10 pa --type activations -o results/
+RUN_BASELINE=true
+RUN_DETECTION=true
+RUN_ZERO=true
+RUN_CORRECTION=false
 
-# Analyze weight distributions (no inference needed)
-python -m cli -m vit_tiny pa --type weights -o results/
-
-# Run both analyses
-python -m cli -m vit_tiny --max_batches 10 pa --type both -o results/
+MODELS=(vit_tiny deit_tiny swin_tiny)
+METHODS=(checkone checksum)
+FAULT_SEED=1
 ```
 
-Output files:
-- `{model}_activations.json` - Layer activation ranges and histograms
-- `{model}_weights.json` - Parameter statistics and distributions
-
-### Save Mode
-
-Pre-compute detection data for faster startup:
+Then run from the repo root:
 
 ```bash
-# Save neuro checker data
-python -m cli -m vit_tiny save --method neuro --layers all
+bash scripts/run_detection.sh
+```
 
-# Save checksum data
-python -m cli -m vit_tiny save --method checksum --layers fc1
+Results are appended to `results/detection_results/detection_measurements/runs.json` and merged into the database JSONs (`baseline.json`, `detection.json`, `zero.json`, `correction.json`).
 
-# Save fault-free logits (for SDC metrics)
-python -m cli -m vit_tiny save --logits
+### Viewing Results
+
+```bash
+cd results/detection_results
+streamlit run plot.py
 ```
 
 ## Project Structure
 
 ```
+scripts/
+└── run_detection.sh          # Batch experiment runner
+
 src/
-├── __init__.py              # Top-level API exports
-├── cli.py                   # Command-line interface
+├── cli.py                    # CLI argument parsing and entry point
+├── main.py                   # Experiment orchestration
 │
-├── core/                    # Core utilities
-│   ├── model.py            # Model loading and data management
-│   ├── data.py             # ImageNet dataset
-│   ├── layers.py           # Layer traversal utilities
-│   └── bits.py             # Bit manipulation for fault injection
+├── core/
+│   ├── config.py             # Paths, supported models, ModelConfig
+│   ├── model.py              # Model loading, data, fault-free logits
+│   ├── data.py               # ImageNet dataset
+│   ├── layers.py             # Layer traversal and wrapping utilities
+│   └── bits.py               # Bit manipulation for fault injection
 │
-├── detection/              # Plugin-based detection system
-│   ├── __init__.py        # Public API
-│   ├── base.py            # BaseDetector abstract class
-│   ├── registry.py        # Method registration system
-│   ├── manager.py         # Factory function
-│   └── methods/           # Detection method plugins
-│       ├── neuro.py       # Extra neuron checker
-│       ├── checksum.py    # ABFT checksums
-│       └── softmean.py    # Softmax-mean checksums
+├── detection/
+│   ├── checkone.py           # CheckOne — row-sum ABFT detector
+│   ├── checksum.py           # CheckSum — approxABFT row/col detector
+│   └── baseline.py           # Baseline — no detection, overhead only
 │
-├── injection/             # Fault injection
-│   └── injector.py       # Bit-flip injector
+├── injection/
+│   └── injector.py           # Bit-flip fault injector
 │
-├── eval/                  # Evaluation metrics
-│   ├── metrics.py        # Main evaluate() function
-│   ├── accuracy.py       # Top-K accuracy
-│   └── sdc.py            # SDC metrics
+├── eval/
+│   ├── accuracy.py           # Top-1/Top-5 accuracy with Welford aggregation
+│   └── sdc.py                # SDC metrics (logit SDC rate, critical SDC, MSDC)
 │
-└── analysis/             # Model analysis
-    ├── activations.py    # Activation analysis
-    └── weights.py        # Weight analysis
+└── analysis/
+    ├── activations.py        # Activation range and histogram analysis
+    └── weights.py            # Weight distribution analysis
+
+results/
+├── detection_results/
+│   ├── baseline.json         # Aggregated baseline results database
+│   ├── detection.json        # Detection-only results database
+│   ├── zero.json             # Zero-correction results database
+│   ├── correction.json       # Arithmetic correction results database
+│   ├── merge.py              # Merges run output into database JSONs
+│   └── plot.py               # Streamlit results explorer
 ```
 
 ## Supported Models
 
-| Family | Models |
-|--------|--------|
+| Family | Keys |
+|--------|------|
 | ViT | `vit_tiny`, `vit_small`, `vit_base`, `vit_large` |
 | DeiT | `deit_tiny`, `deit_small`, `deit_base` |
 | Swin | `swin_tiny`, `swin_small`, `swin_base` |
 | BEiT | `beit_base` |
 
-## Layer Filters
+## Metrics
 
-| Filter | Description |
+| Metric | Description |
 |--------|-------------|
-| `all` | All linear layers |
-| `fc1` | MLP first projection |
-| `fc2` | MLP second projection |
-| `qkv` | Attention QKV projection |
-| `proj` | Attention output projection |
-| `attn` | Attention modules (for softmean) |
-
-## Data Setup
-
-The framework expects ImageNet data in the following structure:
-
-```
-/path/to/imagenet/
-├── train/
-│   ├── n01440764/
-│   ├── n01443537/
-│   └── ...
-├── val/
-│   ├── n01440764/
-│   ├── n01443537/
-│   └── ...
-└── imagenet_class_index.json
-```
-
-Configure the path in `ModelConfig`:
-
-```python
-config = ModelConfig(data_root="/path/to/imagenet")
-```
-
-## Running Tests
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test file
-pytest tests/test_detection.py -v
-```
+| Top-1 / Top-5 accuracy | Classification accuracy across runs (mean ± std) |
+| Detection accuracy | % of runs where a weight fault was detected |
+| False positives | Detections fired on layers with no injected fault |
+| Logit SDC rate | % of output logits with >0.1% relative change vs fault-free |
+| Critical SDC (Top-1/5) | % of runs where the predicted class changed |
+| MSDC | Median absolute logit change vs fault-free |
+| Batch speed | Mean ± std inference time per batch (ms) |

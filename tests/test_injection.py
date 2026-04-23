@@ -1,11 +1,11 @@
 """Test fault injection."""
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
-from injection import Injector, InjectedFault
 from core.bits import flip_bit
+from injection import InjectedFault, Injector
 
 
 class TestFlipBit:
@@ -34,6 +34,7 @@ class TestInjector:
 
     def _make_model(self):
         """Create a model with named linear layers."""
+
         class Model(nn.Module):
             def __init__(self):
                 super().__init__()

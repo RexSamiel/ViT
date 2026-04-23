@@ -57,7 +57,7 @@ class SDCTracker:
             valid_ff = faultfree[~crash_mask]
             valid_diff = valid_ff - valid_faulty
 
-            sdc_magnitude = valid_diff.abs().median(dim=1).values
+            sdc_magnitude = valid_diff.abs().sum(dim=1)
             self.sdc_magnitudes.append(sdc_magnitude.cpu())
 
             mean_relative_change = valid_diff.abs().mean(dim=1) / (valid_ff.abs().mean(dim=1) + 1e-10)

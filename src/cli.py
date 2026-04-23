@@ -72,6 +72,8 @@ class ChainedArgumentParser:
                             help="Sub-component label for output metadata")
         parser.add_argument("--block", type=int, default=None,
                             help="Transformer block index for output metadata (0-based)")
+        parser.add_argument("--layer_prefix", type=str, default=None,
+                            help="Filter layers by exact name prefix, e.g. 'layers.2.blocks.3'")
         return parser
 
     def _create_hr_parser(self):
@@ -84,7 +86,7 @@ class ChainedArgumentParser:
                             choices=["checkone", "checksum", "baseline"],
                             help="Detection method")
         parser.add_argument("--correction", type=str, default=None,
-                            choices=["zero", "rerun", "correct"],
+                            choices=["zero", "correct"],
                             help="Correction mode")
         parser.add_argument("--time", action="store_true",
                             help="Show per-layer detection timing")
@@ -109,8 +111,6 @@ class ChainedArgumentParser:
                             help="Include full weights (needed for col-check localisation and rerun correction)")
         parser.add_argument("--threshold", action="store_true",
                             help="Calibrate detection threshold from clean data and save for both methods")
-        parser.add_argument("--margin", type=float, default=3.0,
-                            help="Standard deviations above mean noise: atol = mean + margin * std (3-sigma rule, default: 3.0)")
         parser.add_argument("--layers", type=str, default="all",
                             choices=["all", "fc1", "fc2", "qkv", "proj", "attn"])
         return parser

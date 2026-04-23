@@ -30,7 +30,6 @@ from core.model import Model
 from core.config import ModelConfig, SUPPORTED_MODELS
 from detection import CheckOne, DetectedFault
 from injection import Injector, InjectedFault
-from eval import evaluate, Results
 
 __all__ = [
     "Model",
@@ -40,7 +39,5 @@ __all__ = [
     "DetectedFault",
     "Injector",
     "InjectedFault",
-    "evaluate",
-    "Results",
 ]
 __version__ = "0.3.0"

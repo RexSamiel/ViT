@@ -192,48 +192,12 @@ class _Wrapper(nn.Module):
                             out[b, tok, feat] -= row_diff
                         else:
                             out[b, tok, feat] = 0.0
-        else:
-            if self.clean_weights is not None:
-                for feat in faulty_feats:
-                    corrected = F.linear(x, self.clean_weights[feat : feat + 1, :])
-                    out[:, :, feat] = corrected.squeeze(-1)
-                    if self.clean_bias is not None:
-                        out[:, :, feat] += self.clean_bias[feat]
-            else:
-                for b, feat, _ in self.col_faults:
-                    faulty_toks = row_fault_map.get(b)
-                    if faulty_toks:
-                        for tok in faulty_toks:
-                            out[b, tok, feat] = 0.0
-        return out
-
-    def _locate_and_fix(
-        self,
-        out: torch.Tensor,
-        x: torch.Tensor,
-        faulty_feats: set[int],
-    ) -> torch.Tensor:
-        """Exact correction without a full matrix multiply.
-
-        For each faulty output column:
-          1. Compare W_faulty[feat] vs W_clean[feat] to find position j
-             and fault magnitude delta  (one row subtraction + argmax).
-          2. Subtract x[:, :, j] * delta from the faulty column.
-        """
-        assert self.clean_weights is not None
-        for feat in faulty_feats:
-            diff_row = self.weight[feat] - self.clean_weights[feat]
-            j = int(diff_row.abs().argmax().item())
-            delta = diff_row[j].item()
-            out[:, :, feat] -= x[:, :, j] * delta
         return out
 
     def threshold_calibrate_start(self):
         """Start collecting clean-condition noise for both row and col checks."""
         self._cal_abs_buf:     list[torch.Tensor] = []
-        self._cal_rel_buf:     list[torch.Tensor] = []
         self._cal_abs_col_buf: list[torch.Tensor] = []
-        self._cal_rel_col_buf: list[torch.Tensor] = []
         self._calibrating_threshold = True
 
     def threshold_calibrate_update(
@@ -241,33 +205,21 @@ class _Wrapper(nn.Module):
         actual_col: torch.Tensor, x_token_sums: torch.Tensor,
     ):
         """Accumulate per-batch noise for row and col checks — stays on GPU."""
-        diff_row = (actual_row - golden_row).abs()
-        self._cal_abs_buf.append(diff_row.max())
-        self._cal_rel_buf.append((diff_row / (golden_row.abs() + 1e-12)).max())
+        self._cal_abs_buf.append((actual_row - golden_row).abs().max())
 
         # Col-check noise: augmented-matmul path vs standalone F.linear path.
         # Both use the same (clean) weights during calibration — the difference
         # is purely floating-point noise from two different BLAS code paths.
         golden_col = F.linear(x_token_sums.squeeze(1), self.weights_ext[: self.C_out])
-        diff_col = (actual_col - golden_col).abs()
-        self._cal_abs_col_buf.append(diff_col.max())
-        self._cal_rel_col_buf.append((diff_col / (golden_col.abs() + 1e-12)).max())
+        self._cal_abs_col_buf.append((actual_col - golden_col).abs().max())
 
-    def threshold_calibrate_end(self, margin: float = 3.0):
-        """Set atol/rtol for row and col checks from mean + margin*std."""
+    def threshold_calibrate_end(self):
+        """Set atol for row and col checks from maximum observed noise during clean calibration run."""
         if not self._cal_abs_buf:
             return
-        abs_vals = torch.stack(self._cal_abs_buf)
-        rel_vals = torch.stack(self._cal_rel_buf)
-        self.atol = float(abs_vals.mean() + margin * abs_vals.std(unbiased=False))
-        self.rtol = float(rel_vals.mean() + margin * rel_vals.std(unbiased=False))
-
+        self.atol = float(torch.stack(self._cal_abs_buf).max())
         if self._cal_abs_col_buf:
-            abs_col = torch.stack(self._cal_abs_col_buf)
-            rel_col = torch.stack(self._cal_rel_col_buf)
-            self.atol_col = float(abs_col.mean() + margin * abs_col.std(unbiased=False))
-            self.rtol_col = float(rel_col.mean() + margin * rel_col.std(unbiased=False))
-
+            self.atol_col = float(torch.stack(self._cal_abs_col_buf).max())
         self._calibrating_threshold = False
 
     def get_baseline(self, include_weights: bool = False) -> dict:
@@ -379,18 +331,15 @@ class Checksum:
             name: bool(w.row_faults or w.col_faults) for name, w in self.wrapped.items()
         }
 
-    def calibrate_threshold(
-        self, model=None, max_batches: int | None = None, margin: float = 3.0
-    ):
+    def calibrate_threshold(self, model=None, max_batches: int | None = None):
         """Calibrate detection threshold from clean data.
 
-        Runs inference on clean model, measures floating-point noise in the row-check
-        signal, then sets atol = mean + margin*std (3-sigma rule) for each layer.
+        Runs inference on clean model, measures floating-point noise in the row and
+        col check signals, then sets atol = maximum observed noise for each layer.
 
         Args:
             model: Model instance with dataloader. If None, uses model from __init__.
             max_batches: Batches to use (None = full dataset, recommended).
-            margin: Standard deviations above mean (default 3.0 = 3-sigma rule).
         """
         if model is None:
             model = self._model_ref
@@ -407,7 +356,7 @@ class Checksum:
             if max_batches is not None
             else "full dataset"
         )
-        print(f"Calibrating threshold on {limit_str} (margin={margin})...")
+        print(f"Calibrating threshold on {limit_str}...")
 
         device = next(model.net.parameters()).device
         total_samples = 0
@@ -426,12 +375,12 @@ class Checksum:
                 break
 
         for w in self.wrapped.values():
-            w.threshold_calibrate_end(margin=margin)
+            w.threshold_calibrate_end()
 
         print(f"  Calibrated on {total_samples} samples ({batch_count} batches)")
         for name, w in self.wrapped.items():
             if getattr(w, "_cal_abs_buf", []):
-                print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
+                print(f"  {name}: row atol={w.atol:.2e}  col atol={w.atol_col:.2e}")
         return total_samples
 
     def remove(self):
@@ -517,7 +466,7 @@ class Checksum:
                 if name in data:
                     print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
 
-        if self.correction in ("rerun", "zero", "correct") and not any(
+        if self.correction in ("zero", "correct") and not any(
             self.wrapped[n].clean_weights is not None for n in self.wrapped
         ):
             print(
@@ -537,14 +486,14 @@ class Checksum:
         for w in self.wrapped.values():
             w.threshold_calibrate_start()
 
-    def end_threshold_calibration(self, margin: float = 3.0):
+    def end_threshold_calibration(self):
         """Finalise threshold calibration and print per-layer tolerances."""
         for w in self.wrapped.values():
-            w.threshold_calibrate_end(margin=margin)
-        print(f"Checksum threshold calibration complete (margin={margin}):")
+            w.threshold_calibrate_end()
+        print("Checksum threshold calibration complete:")
         for name, w in self.wrapped.items():
             if getattr(w, "_cal_abs_buf", []):
-                print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
+                print(f"  {name}: row atol={w.atol:.2e}  col atol={w.atol_col:.2e}")
 
     def print_summary(self, layer_stats: dict[str, dict[str, int]]):
         """Print aggregate detection table across all runs."""

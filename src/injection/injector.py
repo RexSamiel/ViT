@@ -152,12 +152,17 @@ class Injector:
         model,
         layers: str = "all",
         bit_range: list[int] | None = None,
+        block_idx: int | None = None,
+        layer_prefix: str | None = None,
     ):
         """
         Args:
             model: Model instance (with .net attribute) or nn.Module
             layers: Layer filter ("all", "fc1", "fc2", "qkv", "proj", or custom pattern)
             bit_range: Optional (min, max) bit range for flips (0-31 for float32)
+            block_idx: If set, restrict injection to layers containing f"blocks.{block_idx}."
+            layer_prefix: If set, restrict injection to layers containing this substring,
+                          e.g. "layers.2.blocks.3" for exact swin block targeting.
         """
         if hasattr(model, "net"):
             self.model = model.net
@@ -166,6 +171,8 @@ class Injector:
 
         self.layer_filter = layers
         self.bit_range = bit_range
+        self.block_idx = block_idx
+        self.layer_prefix = layer_prefix
         self.faults: list[InjectedFault] = []
 
         self._layers = self._get_layers()
@@ -195,7 +202,12 @@ class Injector:
             elif isinstance(module, nn.Linear) and name:
                 if ".original" not in name:
                     layers[name] = module
-        return filter_layers(layers, self.layer_filter)
+        layers = filter_layers(layers, self.layer_filter)
+        if self.block_idx is not None:
+            layers = {n: l for n, l in layers.items() if f"blocks.{self.block_idx}." in n}
+        if self.layer_prefix is not None:
+            layers = {n: l for n, l in layers.items() if self.layer_prefix in n}
+        return layers
 
     @property
     def total_weights(self) -> int:

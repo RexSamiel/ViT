@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.config import calibration_path, weights_path
+from core.config import calibration_path
 from core.layers import unwrap_layers, wrap_layers
 
 
@@ -48,11 +48,6 @@ class _Wrapper(nn.Module):
         # Golden row sums for weight-fault detection (clean, never mutated by injection)
         self.weight_sums = original.weight.data.sum(dim=1).clone()
 
-
-        # Loaded only when --correction is set
-        self.clean_weights: torch.Tensor | None = None
-        self.clean_bias: torch.Tensor | None = None
-
         # Loaded from calibration baseline for input fault detection
         self.input_min: float | None = None
         self.input_max: float | None = None
@@ -67,7 +62,6 @@ class _Wrapper(nn.Module):
         self._calibrating = False
         self._cal_min = float("inf")
         self._cal_max = float("-inf")
-        self._cal_sum = 0.0
         self._cal_count = 0
         self._cal_weight_check: torch.Tensor | None = None
 
@@ -96,11 +90,11 @@ class _Wrapper(nn.Module):
             self._ones_buf = x.new_ones(B, 1, C)
         x_ext = torch.cat([x, self._ones_buf], dim=1)
 
-        out_ext = F.linear(x_ext, self.weights_ext)             # [B, N+1, C_out+1]
+        out_ext = F.linear(x_ext, self.weights_ext)  # [B, N+1, C_out+1]
 
-        weight_check = out_ext[:, -1, : self.C_out]             # ones @ W.T — weight check
-        input_check  = out_ext[:, :-1, self.C_out]              # x @ ones  — input check
-        out          = out_ext[:, :-1, : self.C_out]
+        weight_check = out_ext[:, -1, : self.C_out]  # ones @ W.T — weight check
+        input_check = out_ext[:, :-1, self.C_out]  # x @ ones  — input check
+        out = out_ext[:, :-1, : self.C_out]
 
         if self.original.bias is not None:
             out = out + self.original.bias
@@ -109,12 +103,12 @@ class _Wrapper(nn.Module):
             self.weight_faults = []
             self.input_faults = []
             if self._calibrating:
-                self._calibrate_update(weight_check, input_check, out, B, N)
+                self._calibrate_update(weight_check, input_check)
             if getattr(self, "_calibrating_threshold", False):
                 self.threshold_calibrate_update(weight_check)
         else:
             self.weight_faults = self._detect_weights(weight_check)
-            self.input_faults  = self._detect_input(input_check)
+            self.input_faults = self._detect_input(input_check)
 
         if self.correction is not None:
             out = self._correct(out, x)
@@ -137,7 +131,9 @@ class _Wrapper(nn.Module):
         affect a single batch item.
         """
         # weight_sums: [C_out] → broadcast against weight_check: [B, C_out]
-        mask = ~torch.isclose(weight_check, self.weight_sums.unsqueeze(0), atol=self.atol, rtol=self.rtol)
+        mask = ~torch.isclose(
+            weight_check, self.weight_sums.unsqueeze(0), atol=self.atol, rtol=self.rtol
+        )
         if not mask.any():
             return []
         diffs = weight_check - self.weight_sums.unsqueeze(0)
@@ -163,27 +159,10 @@ class _Wrapper(nn.Module):
         return [(int(r[0]), int(r[1]), float(input_check[r[0], r[1]])) for r in indices]
 
     def _correct(self, out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        if self.correction == "zero":
-            if self.weight_faults:
-                out = self._zero_output_columns(out, self.weight_faults)
-            if self.input_faults:
-                out = self._zero_output_rows(out, self.input_faults)
-        elif self.correction == "correct":
-            if self.weight_faults:
-                if self.clean_weights is not None:
-                    out = self._locate_and_fix(out, x, self.weight_faults)
-                else:
-                    out = self._zero_output_columns(out, self.weight_faults)
-            if self.input_faults:
-                out = self._zero_output_rows(out, self.input_faults)
-        else:  # "rerun"
-            if self.weight_faults:
-                if self.clean_weights is not None:
-                    out = self._rerun_weights_local(out, x, self.weight_faults)
-                else:
-                    out = self._zero_output_columns(out, self.weight_faults)
-            if self.input_faults:
-                out = self._rerun_inputs_local(out, x, self.input_faults)
+        if self.weight_faults:
+            out = self._zero_output_columns(out, self.weight_faults)
+        if self.input_faults:
+            out = self._zero_output_rows(out, self.input_faults)
         return out
 
     def _zero_output_columns(
@@ -194,33 +173,6 @@ class _Wrapper(nn.Module):
             out[b, :, feat] = 0.0
         return out
 
-    def _locate_and_fix(
-        self,
-        out: torch.Tensor,
-        x: torch.Tensor,
-        faults: list[tuple[int, int, float]],
-    ) -> torch.Tensor:
-        """Exact correction without a full matrix multiply.
-
-        For each faulty output column:
-          1. Compare W_faulty[feat] vs W_clean[feat] to find the exact position j
-             and fault magnitude delta  (one row subtraction + argmax).
-          2. Subtract x[:, :, j] * delta from the faulty column
-             (one input column × scalar — no dot product over C_in).
-        """
-        assert self.clean_weights is not None
-        # Group by feat, collect affected batch items
-        feat_batches: dict[int, list[int]] = {}
-        for b, feat, _ in faults:
-            feat_batches.setdefault(feat, []).append(b)
-        for feat, batches in feat_batches.items():
-            diff_row = self.weight[feat] - self.clean_weights[feat]
-            j = int(diff_row.abs().argmax().item())
-            delta = diff_row[j].item()
-            for b in batches:
-                out[b, :, feat] -= x[b, :, j] * delta
-        return out
-
     def _zero_output_rows(
         self, out: torch.Tensor, faults: list[tuple[int, int, float]]
     ) -> torch.Tensor:
@@ -229,54 +181,11 @@ class _Wrapper(nn.Module):
             out[b, tok, :] = 0.0
         return out
 
-    def _rerun_weights_local(
-        self,
-        out: torch.Tensor,
-        x: torch.Tensor,
-        faults: list[tuple[int, int, float]],
-    ) -> torch.Tensor:
-        """Recompute faulty output features using clean weights."""
-        clean_weights = self.clean_weights
-        assert clean_weights is not None
-        feat_batches: dict[int, list[int]] = {}
-        for b, feat, _ in faults:
-            feat_batches.setdefault(feat, []).append(b)
-        for feat, batches in feat_batches.items():
-            for b in batches:
-                corrected = F.linear(x[b:b+1], clean_weights[feat : feat + 1, :])
-                out[b, :, feat] = corrected.squeeze(0).squeeze(-1)
-                if self.clean_bias is not None:
-                    out[b, :, feat] += self.clean_bias[feat]
-        return out
-
-    def _rerun_inputs_local(
-        self,
-        out: torch.Tensor,
-        x: torch.Tensor,
-        faults: list[tuple[int, int, float]],
-    ) -> torch.Tensor:
-        """Substitute faulty input tokens with zeros and recompute affected output rows."""
-        x_clean = x.clone()
-        for b, tok, _ in faults:
-            x_clean[b, tok, :] = 0.0
-        out_recomputed = F.linear(x_clean, self.weight, self.original.bias)
-        for b, tok, _ in faults:
-            out[b, tok, :] = out_recomputed[b, tok, :]
-        return out
-
-    def _calibrate_update(
-        self,
-        weight_check: torch.Tensor,
-        input_check: torch.Tensor,
-        out: torch.Tensor,
-        B: int,
-        N: int,
-    ):
+    def _calibrate_update(self, weight_check: torch.Tensor, input_check: torch.Tensor):
         if self._cal_weight_check is None:
             self._cal_weight_check = weight_check.detach()[0].cpu().clone()
         self._cal_min = min(self._cal_min, input_check.min().item())
         self._cal_max = max(self._cal_max, input_check.max().item())
-        self._cal_sum += input_check.sum().item()
         self._cal_count += input_check.numel()
 
     def calibrate_start(self):
@@ -284,7 +193,6 @@ class _Wrapper(nn.Module):
         self._calibrating = True
         self._cal_min = float("inf")
         self._cal_max = float("-inf")
-        self._cal_sum = 0.0
         self._cal_count = 0
         self._cal_weight_check = None
 
@@ -300,48 +208,30 @@ class _Wrapper(nn.Module):
     def threshold_calibrate_start(self):
         """Start collecting clean-condition detection noise for threshold calibration."""
         self._cal_abs_buf: list[torch.Tensor] = []
-        self._cal_rel_buf: list[torch.Tensor] = []
         # Cache golden row sums once — they never change during calibration
         self._cal_golden = self.weights_ext[: self.C_out].sum(dim=1)
         self._calibrating_threshold = True
 
     def threshold_calibrate_update(self, weight_check: torch.Tensor):
         """Accumulate per-batch noise — stays on GPU, no CPU sync until end."""
-        diff = (weight_check[0] - self._cal_golden).abs()
+        diff = (weight_check - self._cal_golden.unsqueeze(0)).abs()
         self._cal_abs_buf.append(diff.max())
-        self._cal_rel_buf.append((diff / (self._cal_golden.abs() + 1e-12)).max())
 
-    def threshold_calibrate_end(self, margin: float = 3.0):
-        """Set atol/rtol from mean + margin*std, computed entirely on GPU."""
+    def threshold_calibrate_end(self):
+        """Set atol from maximum observed noise during clean calibration run."""
         if not self._cal_abs_buf:
             return
-        abs_vals = torch.stack(self._cal_abs_buf)
-        rel_vals = torch.stack(self._cal_rel_buf)
-        self.atol = float(abs_vals.mean() + margin * abs_vals.std(unbiased=False))
-        self.rtol = float(rel_vals.mean() + margin * rel_vals.std(unbiased=False))
+        self.atol = float(torch.stack(self._cal_abs_buf).max())
         self._calibrating_threshold = False
 
-    def get_baseline(self, include_weights: bool = False) -> dict:
-        """Get baseline data for saving.
-
-        Always saves: weight_sums (for detection), input_min/max (for input detection).
-        With include_weights: full weight matrix (for correction only).
-        """
-        data: dict = {
+    def get_baseline(self) -> dict:
+        """Get baseline data for saving."""
+        return {
             "weight_sums": self.weight_sums.cpu(),
             "input_min": self.input_min,
             "input_max": self.input_max,
             "atol": self.atol,
-            "rtol": self.rtol,
         }
-        if include_weights:
-            data["weights"] = self.weight.data.cpu().clone()
-            data["bias"] = (
-                self.original.bias.data.cpu().clone()
-                if self.original.bias is not None
-                else None
-            )
-        return data
 
     def set_baseline(self, data: dict, dtype: torch.dtype | None = None):
         """Load baseline data."""
@@ -355,12 +245,6 @@ class _Wrapper(nn.Module):
             self.input_max = data["input_max"]
         if "atol" in data:
             self.atol = data["atol"]
-        if "rtol" in data:
-            self.rtol = data["rtol"]
-        if "weights" in data and self.correction is not None:
-            self.clean_weights = data["weights"].to(device=device, dtype=target_dtype)
-            if data.get("bias") is not None:
-                self.clean_bias = data["bias"].to(device=device, dtype=target_dtype)
 
 
 class CheckOne:
@@ -414,7 +298,6 @@ class CheckOne:
         max_batches: int | None = None,
         inputs: bool = True,
         threshold: bool = False,
-        margin: float = 3.0,
     ) -> int:
         """Run one calibration pass collecting input stats and/or threshold noise.
 
@@ -425,8 +308,7 @@ class CheckOne:
             model: Model instance with dataloader. If None, uses model from __init__.
             max_batches: Number of batches to use (None = full dataset).
             inputs: Calibrate input fault detection range.
-            threshold: Calibrate detection threshold (atol/rtol).
-            margin: Standard deviations above mean for threshold (3-sigma rule).
+            threshold: Calibrate detection threshold (atol).
         Returns:
             Total samples used.
         """
@@ -445,9 +327,15 @@ class CheckOne:
                 w.threshold_calibrate_start()
 
         parts = []
-        if inputs:    parts.append("inputs")
-        if threshold: parts.append("threshold")
-        limit_str = f"up to {max_batches} batches" if max_batches is not None else "full dataset"
+        if inputs:
+            parts.append("inputs")
+        if threshold:
+            parts.append("threshold")
+        limit_str = (
+            f"up to {max_batches} batches"
+            if max_batches is not None
+            else "full dataset"
+        )
         print(f"Calibrating {'+'.join(parts)} on {limit_str}...")
 
         device = next(model.net.parameters()).device
@@ -471,23 +359,24 @@ class CheckOne:
                 w.calibrate_end()
         if threshold:
             for w in self.wrapped.values():
-                w.threshold_calibrate_end(margin=margin)
+                w.threshold_calibrate_end()
 
         print(f"  Calibrated on {total_samples} samples ({batch_count} batches)")
         if inputs:
             for name, w in self.wrapped.items():
                 if w.input_min is not None:
-                    print(f"  {name}: input range [{w.input_min:.2f}, {w.input_max:.2f}]")
+                    print(
+                        f"  {name}: input range [{w.input_min:.2f}, {w.input_max:.2f}]"
+                    )
         if threshold:
             for name, w in self.wrapped.items():
                 if getattr(w, "_cal_abs_buf", []):
-                    rtol_str = f" rtol={w.rtol:.2e}" if w.rtol > 0 else ""
-                    print(f"  {name}: atol={w.atol:.2e}{rtol_str}")
+                    print(f"  {name}: atol={w.atol:.2e}")
         return total_samples
 
-    def calibrate_threshold(self, model=None, max_batches: int | None = None, margin: float = 3.0):
+    def calibrate_threshold(self, model=None, max_batches: int | None = None):
         """Calibrate detection threshold only. Prefer calibrate(threshold=True) for combined passes."""
-        return self.calibrate(model=model, max_batches=max_batches, inputs=False, threshold=True, margin=margin)
+        return self.calibrate(model=model, max_batches=max_batches, inputs=False, threshold=True)
 
     def get_faults(self) -> list[DetectedFault]:
         """Get all faults from last forward pass."""
@@ -518,31 +407,17 @@ class CheckOne:
         unwrap_layers(self.model, self.wrapped)
         self.wrapped.clear()
 
-    def save(self, path: Path | str | None = None, include_weights: bool = False, save_calibration: bool = True):
-        """Save calibration and/or weights.
-
-        save_calibration=True  writes data/{model}/calibration/checkone.pt.
-        include_weights=True   writes data/{model}/weights/checkone.pt.
-        Pass save_calibration=False when saving weights only — avoids overwriting
-        a previously calibrated checkone.pt with default (uncalibrated) values.
-        """
+    def save(self, path: Path | str | None = None, save_calibration: bool = True):
+        """Save calibration to data/{model}/calibration/checkone.pt."""
         if save_calibration:
             p = Path(path) if path else calibration_path(self.model_name, "checkone")
             p.parent.mkdir(parents=True, exist_ok=True)
-            data = {name: w.get_baseline(include_weights=False) for name, w in self.wrapped.items()}
+            data = {name: w.get_baseline() for name, w in self.wrapped.items()}
             torch.save(data, p)
             print(f"Saved checkone calibration to {p} ({p.stat().st_size / 1024**2:.1f} MB)")
 
-        if include_weights:
-            wp = weights_path(self.model_name, "checkone")
-            wp.parent.mkdir(parents=True, exist_ok=True)
-            wdata = {name: w.get_baseline(include_weights=True) for name, w in self.wrapped.items()}
-            torch.save(wdata, wp)
-            print(f"Saved checkone weights to {wp} ({wp.stat().st_size / 1024**2:.1f} MB)")
-
     def load(self, path: Path | str | None = None, verbose: bool = False) -> bool:
         """Load calibration from data/{model}/calibration/checkone.pt.
-        Also loads weights from data/{model}/weights/checkone.pt if present.
         Raises RuntimeError if calibration file is missing or input calibration was not run.
         """
         p = Path(path) if path else calibration_path(self.model_name, "checkone")
@@ -558,15 +433,6 @@ class CheckOne:
                 wrapper.set_baseline(data[name])
         print(f"Loaded checkone calibration from {p} ({len(data)} layers)")
 
-        wp = weights_path(self.model_name, "checkone")
-        if wp.exists():
-            wdata = torch.load(wp, weights_only=False)
-            for name, wrapper in self.wrapped.items():
-                if name in wdata and "weights" in wdata[name]:
-                    wrapper.set_baseline({"weights": wdata[name]["weights"],
-                                          "bias": wdata[name].get("bias")})
-            print(f"Loaded checkone weights from {wp}")
-
         missing_input_cal = [n for n, w in self.wrapped.items() if w.input_min is None]
         if missing_input_cal:
             raise RuntimeError(
@@ -578,13 +444,7 @@ class CheckOne:
         if verbose:
             for name, w in self.wrapped.items():
                 if name in data:
-                    rtol_str = f" rtol={w.rtol:.2e}" if w.rtol > 0 else ""
-                    print(f"  {name}: atol={w.atol:.2e}{rtol_str}")
-
-        if self.correction in ("rerun", "correct") and not any(
-            self.wrapped[n].clean_weights is not None for n in self.wrapped
-        ):
-            print("Warning: correction enabled but no weights found. Run save --weights first.")
+                    print(f"  {name}: atol={w.atol:.2e}")
 
         return True
 
@@ -599,15 +459,14 @@ class CheckOne:
         for w in self.wrapped.values():
             w.threshold_calibrate_start()
 
-    def end_threshold_calibration(self, margin: float = 3.0):
+    def end_threshold_calibration(self):
         """Finalise threshold calibration and print per-layer tolerances."""
         for w in self.wrapped.values():
-            w.threshold_calibrate_end(margin=margin)
-        print(f"CheckOne threshold calibration complete (margin={margin}):")
+            w.threshold_calibrate_end()
+        print("CheckOne threshold calibration complete:")
         for name, w in self.wrapped.items():
             if getattr(w, "_cal_abs_buf", []):
-                rtol_str = f" rtol={w.rtol:.2e}" if w.rtol > 0 else ""
-                print(f"  {name}: atol={w.atol:.2e}{rtol_str}")
+                print(f"  {name}: atol={w.atol:.2e}")
 
     def start_input_calibration(self):
         """Activate input-range calibration hooks."""
@@ -631,24 +490,24 @@ class CheckOne:
         print(
             f"\nDetection Summary ({self.name}):\n"
             f"  {'Layer':<{col}}  {'Injected':>8}  {'Detected':>8}  {'Rate':>7}  {'False+':>6}  {'Input Det':>9}\n"
-            f"  {'-'*col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}"
+            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}"
         )
         for layer in sorted(layer_stats):
             s = layer_stats[layer]
-            inj  = s["injected"]
-            det  = s["detected"]
-            fp   = s["false_positive"]
-            inp  = s.get("input_faults", 0)
+            inj = s["injected"]
+            det = s["detected"]
+            fp = s["false_positive"]
+            inp = s.get("input_faults", 0)
             rate = f"{100 * det / inj:.1f}%" if inj else "  n/a"
             print(f"  {layer:<{col}}  {inj:>8}  {det:>8}  {rate:>7}  {fp:>6}  {inp:>9}")
 
-        total_inj  = sum(s["injected"]            for s in layer_stats.values())
-        total_det  = sum(s["detected"]            for s in layer_stats.values())
-        total_fp   = sum(s["false_positive"]      for s in layer_stats.values())
-        total_inp  = sum(s.get("input_faults", 0) for s in layer_stats.values())
+        total_inj = sum(s["injected"] for s in layer_stats.values())
+        total_det = sum(s["detected"] for s in layer_stats.values())
+        total_fp = sum(s["false_positive"] for s in layer_stats.values())
+        total_inp = sum(s.get("input_faults", 0) for s in layer_stats.values())
         total_rate = f"{100 * total_det / total_inj:.1f}%" if total_inj else "  n/a"
         print(
-            f"  {'-'*col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}\n"
+            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}\n"
             f"  {'TOTAL':<{col}}  {total_inj:>8}  {total_det:>8}  {total_rate:>7}  {total_fp:>6}  {total_inp:>9}"
         )
 
@@ -657,13 +516,15 @@ class CheckOne:
         timed = [r for r in all_runs if r.get("times_ms")]
         if not timed:
             return
-        per_run_ms  = [sum(r["times_ms"]) for r in timed]
+        per_run_ms = [sum(r["times_ms"]) for r in timed]
         per_run_mpb = [ms / len(r["times_ms"]) for ms, r in zip(per_run_ms, timed)]
         total_ms = sum(per_run_ms)
-        avg_mpb  = sum(per_run_mpb) / len(per_run_mpb)
-        std_mpb  = (
-            (sum((v - avg_mpb) ** 2 for v in per_run_mpb) / (len(per_run_mpb) - 1)) ** 0.5
-            if len(per_run_mpb) > 1 else 0.0
+        avg_mpb = sum(per_run_mpb) / len(per_run_mpb)
+        std_mpb = (
+            (sum((v - avg_mpb) ** 2 for v in per_run_mpb) / (len(per_run_mpb) - 1))
+            ** 0.5
+            if len(per_run_mpb) > 1
+            else 0.0
         )
         print(
             f"\nDetection Timing — {self.name} ({len(timed)} runs):\n"

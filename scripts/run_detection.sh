@@ -38,6 +38,7 @@ REPEATS=100
 BATCH_SIZE=100
 MAX_BATCHES=1
 FAULTS=1
+FAULT_SEED=1
 
 MODELS=(
   vit_tiny
@@ -96,7 +97,7 @@ if $RUN_BASELINE; then
   for MODEL in "${MODELS[@]}"; do
     for BIT_LABEL in "${!BIT_MODES[@]}"; do
       BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS"
+      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
       [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
       run_and_merge "baseline" -m "$MODEL" $FI_ARGS
     done
@@ -115,7 +116,7 @@ if $RUN_DETECTION; then
     for METHOD in "${METHODS[@]}"; do
       for BIT_LABEL in "${!BIT_MODES[@]}"; do
         BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS"
+        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
         [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
         run_and_merge "detection" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all
@@ -136,7 +137,7 @@ if $RUN_ZERO; then
     for METHOD in "${METHODS[@]}"; do
       for BIT_LABEL in "${!BIT_MODES[@]}"; do
         BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS"
+        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
         [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
         run_and_merge "zero" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction zero
@@ -157,7 +158,7 @@ if $RUN_CORRECTION; then
     for METHOD in "${METHODS[@]}"; do
       for BIT_LABEL in "${!BIT_MODES[@]}"; do
         BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS"
+        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
         [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
         run_and_merge "correction" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction correct
