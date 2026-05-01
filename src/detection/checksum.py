@@ -58,6 +58,7 @@ class _Wrapper(nn.Module):
         self.col_faults: list[tuple[int, int, float]] = []
 
         self.correction: str | None = None
+        self._x_ext_buf: torch.Tensor | None = None  # reused across calls
 
 
     @property
@@ -81,7 +82,11 @@ class _Wrapper(nn.Module):
         B, N, C_in = x.shape
 
         x_token_sums = x.sum(dim=1, keepdim=True)
-        x_ext = torch.cat([x, x_token_sums], dim=1)
+        if self._x_ext_buf is None or self._x_ext_buf.shape != (B, N + 1, C_in):
+            self._x_ext_buf = x.new_empty(B, N + 1, C_in)
+        self._x_ext_buf[:, :N] = x
+        self._x_ext_buf[:, N:] = x_token_sums
+        x_ext = self._x_ext_buf
 
         out_ext = F.linear(x_ext, self.weights_ext)
 
