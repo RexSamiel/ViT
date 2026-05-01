@@ -302,8 +302,8 @@ def run(global_args, commands):
             co.save(save_calibration=do_calib)
             co.remove()
 
-            # Calibrate and save Checksum
-            print("\nCalibrating Checksum...")
+            # Calibrate and save Checksum (detection-only)
+            print("\nCalibrating Checksum (detection)...")
             cs = Checksum(model, layers=save_args.layers)
             if save_args.threshold:
                 cs.calibrate_threshold(model, max_batches=max_batches)
@@ -311,6 +311,14 @@ def run(global_args, commands):
                 include_weights=save_args.weights, save_calibration=save_args.threshold
             )
             cs.remove()
+
+            # Calibrate and save Checksum (zeroing mode) — separate thresholds
+            if save_args.threshold:
+                print("\nCalibrating Checksum (zeroing)...")
+                cs_zero = Checksum(model, layers=save_args.layers, correction="zero")
+                cs_zero.calibrate_threshold(model, max_batches=max_batches)
+                cs_zero.save(include_weights=False, save_calibration=True)
+                cs_zero.remove()
 
     if global_args.output and all_runs:
         _save_json(global_args.output, all_runs, global_args, fi_args, hr_args, acc, sdc)

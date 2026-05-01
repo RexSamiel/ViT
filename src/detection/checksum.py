@@ -98,7 +98,7 @@ class _Wrapper(nn.Module):
         if getattr(self, "_calibrating_threshold", False):
             self.row_faults = []
             self.col_faults = []
-            self.threshold_calibrate_update(actual_row, golden_row, actual_col, token_out_sums)
+            self.threshold_calibrate_update(actual_row, golden_row, actual_col, x_token_sums, token_out_sums)
         else:
             self.row_faults = self._detect_rows(actual_row, golden_row)
             if self.correction is not None and self.row_faults and self.clean_weights is not None:
@@ -203,11 +203,17 @@ class _Wrapper(nn.Module):
 
     def threshold_calibrate_update(
         self, actual_row: torch.Tensor, golden_row: torch.Tensor,
-        actual_col: torch.Tensor, token_out_sums: torch.Tensor,
+        actual_col: torch.Tensor, x_token_sums: torch.Tensor, token_out_sums: torch.Tensor,
     ):
-        """Accumulate per-batch noise for row and col checks — stays on GPU."""
+        """Accumulate per-batch noise for row and col checks — stays on GPU.
+        Uses the same col-check path as inference so atol_col matches at runtime.
+        """
         self._cal_abs_buf.append((actual_row - golden_row).abs().max())
-        self._cal_abs_col_buf.append((actual_col - token_out_sums).abs().max())
+        if self.correction is not None:
+            golden_col = F.linear(x_token_sums.squeeze(1), self.weights_ext[: self.C_out])
+        else:
+            golden_col = token_out_sums
+        self._cal_abs_col_buf.append((actual_col - golden_col).abs().max())
 
     def threshold_calibrate_end(self):
         """Set atol for row and col checks from maximum observed noise during clean calibration run."""
@@ -384,6 +390,10 @@ class Checksum:
         unwrap_layers(self.model, self.wrapped)
         self.wrapped.clear()
 
+    def _cal_key(self) -> str:
+        """Calibration file key: 'checksum_zero' for zeroing, 'checksum' for detection."""
+        return "checksum_zero" if self.correction is not None else "checksum"
+
     def save(
         self,
         path: Path | str | None = None,
@@ -392,13 +402,14 @@ class Checksum:
     ):
         """Save calibration and/or weights.
 
-        save_calibration=True  writes data/{model}/calibration/checksum.pt.
+        save_calibration=True  writes data/{model}/calibration/checksum.pt
+                               or checksum_zero.pt depending on correction mode.
         include_weights=True   writes data/{model}/weights/checksum.pt.
         Pass save_calibration=False when saving weights only — avoids overwriting
-        a previously calibrated checksum.pt with default (uncalibrated) values.
+        a previously calibrated file with default (uncalibrated) values.
         """
         if save_calibration:
-            p = Path(path) if path else calibration_path(self.model_name, "checksum")
+            p = Path(path) if path else calibration_path(self.model_name, self._cal_key())
             p.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 name: w.get_baseline(include_weights=False)
@@ -422,11 +433,25 @@ class Checksum:
             )
 
     def load(self, path: Path | str | None = None, verbose: bool = False) -> bool:
-        """Load calibration from data/{model}/calibration/checksum.pt.
-        Also loads weights from data/{model}/weights/checksum.pt if present.
+        """Load calibration from data/{model}/calibration/checksum.pt or checksum_zero.pt.
+        Zeroing mode loads checksum_zero.pt; detection-only loads checksum.pt.
+        Also loads weights from data/{model}/weights/checksum.pt if correction is set.
         Raises RuntimeError if calibration or weights files are missing.
         """
-        p = Path(path) if path else calibration_path(self.model_name, "checksum")
+        if path:
+            p = Path(path)
+        else:
+            p = calibration_path(self.model_name, self._cal_key())
+            if not p.exists() and self.correction is not None:
+                fallback = calibration_path(self.model_name, "checksum")
+                if fallback.exists():
+                    import warnings
+                    warnings.warn(
+                        f"Checksum: zeroing calibration not found at {p}. "
+                        f"Falling back to detection calibration at {fallback}. "
+                        f"Run: save --threshold  with correction mode to get accurate zeroing thresholds."
+                    )
+                    p = fallback
         if not p.exists():
             raise RuntimeError(
                 f"Checksum: no calibration file found at {p}.\n"
