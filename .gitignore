@@ -31,6 +31,7 @@ results/*
 # Claude
 .claude/
 
+scripts
 # Jujutsu VCS
 .jj/
 .onnx
