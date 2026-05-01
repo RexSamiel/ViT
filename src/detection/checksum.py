@@ -133,7 +133,9 @@ class _Wrapper(nn.Module):
             return []
         diffs = actual_row - golden_row
         indices = mask.nonzero(as_tuple=False)
-        return [(int(r[0]), int(r[1]), float(diffs[r[0], r[1]])) for r in indices]
+        idx_cpu = indices.cpu()
+        vals_cpu = diffs[indices[:, 0], indices[:, 1]].cpu()
+        return list(zip(idx_cpu[:, 0].tolist(), idx_cpu[:, 1].tolist(), vals_cpu.tolist()))
 
     def _detect_cols(
         self,
@@ -151,7 +153,9 @@ class _Wrapper(nn.Module):
             return []
         diffs = actual_col - golden_col
         indices = mask.nonzero(as_tuple=False)
-        return [(int(r[0]), int(r[1]), float(diffs[r[0], r[1]])) for r in indices]
+        idx_cpu = indices.cpu()
+        vals_cpu = diffs[indices[:, 0], indices[:, 1]].cpu()
+        return list(zip(idx_cpu[:, 0].tolist(), idx_cpu[:, 1].tolist(), vals_cpu.tolist()))
 
     def _correct(self, out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         faulty_feats = {feat for _, feat, _ in self.col_faults}
@@ -209,11 +213,10 @@ class _Wrapper(nn.Module):
         Uses the same col-check path as inference so atol_col matches at runtime.
         """
         self._cal_abs_buf.append((actual_row - golden_row).abs().max())
-        if self.correction is not None:
-            golden_col = F.linear(x_token_sums.squeeze(1), self.weights_ext[: self.C_out])
-        else:
-            golden_col = token_out_sums
-        self._cal_abs_col_buf.append((actual_col - golden_col).abs().max())
+        # Calibrate col from token_out_sums — this is the path used during clean
+        # inference in both detection and zeroing modes (F.linear path only fires
+        # after row faults are already detected, which never happens on clean data).
+        self._cal_abs_col_buf.append((actual_col - token_out_sums).abs().max())
 
     def threshold_calibrate_end(self):
         """Set atol for row and col checks from maximum observed noise during clean calibration run."""
