@@ -93,14 +93,19 @@ class _Wrapper(nn.Module):
             out = out + self.original.bias
 
         actual_row = out_ext[:, :N, : self.C_out].sum(dim=-1)
+        token_out_sums = out_ext[:, :N, : self.C_out].sum(dim=1)
 
         if getattr(self, "_calibrating_threshold", False):
             self.row_faults = []
             self.col_faults = []
-            self.threshold_calibrate_update(actual_row, golden_row, actual_col, x_token_sums)
+            self.threshold_calibrate_update(actual_row, golden_row, actual_col, token_out_sums)
         else:
             self.row_faults = self._detect_rows(actual_row, golden_row)
-            self.col_faults = self._detect_cols(actual_col, x_token_sums)
+            if self.correction is not None and self.row_faults and self.clean_weights is not None:
+                golden_col = F.linear(x_token_sums.squeeze(1), self.clean_weights)
+            else:
+                golden_col = token_out_sums
+            self.col_faults = self._detect_cols(actual_col, golden_col)
 
         if self.correction is not None:
             out = self._correct(out, x)
@@ -133,18 +138,14 @@ class _Wrapper(nn.Module):
     def _detect_cols(
         self,
         actual_col: torch.Tensor,
-        x_token_sums: torch.Tensor,
+        golden_col: torch.Tensor,
     ) -> list[tuple[int, int, float]]:
         """Col check: compare actual col sums vs golden.
 
-        With a single weight fault in row i, ONLY feature i's column sum is off.
-        Requires clean_weights to compute golden col sums at inference time.
+        Standard path: golden_col = token_out_sums (free from extended matmul).
+        Correction path: golden_col = F.linear(x_token_sums, clean_weights) for
+        persistent weight fault localisation.
         """
-        if self.clean_weights is None:
-            return []
-
-        golden_col = F.linear(x_token_sums.squeeze(1), self.clean_weights)
-
         mask = ~torch.isclose(actual_col, golden_col, atol=self.atol_col, rtol=self.rtol_col)
         if not mask.any():
             return []
@@ -202,16 +203,11 @@ class _Wrapper(nn.Module):
 
     def threshold_calibrate_update(
         self, actual_row: torch.Tensor, golden_row: torch.Tensor,
-        actual_col: torch.Tensor, x_token_sums: torch.Tensor,
+        actual_col: torch.Tensor, token_out_sums: torch.Tensor,
     ):
         """Accumulate per-batch noise for row and col checks — stays on GPU."""
         self._cal_abs_buf.append((actual_row - golden_row).abs().max())
-
-        # Col-check noise: augmented-matmul path vs standalone F.linear path.
-        # Both use the same (clean) weights during calibration — the difference
-        # is purely floating-point noise from two different BLAS code paths.
-        golden_col = F.linear(x_token_sums.squeeze(1), self.weights_ext[: self.C_out])
-        self._cal_abs_col_buf.append((actual_col - golden_col).abs().max())
+        self._cal_abs_col_buf.append((actual_col - token_out_sums).abs().max())
 
     def threshold_calibrate_end(self):
         """Set atol for row and col checks from maximum observed noise during clean calibration run."""
@@ -443,35 +439,28 @@ class Checksum:
                 wrapper.set_baseline(data[name])
         print(f"Loaded checksum calibration from {p} ({len(data)} layers)")
 
-        wp = weights_path(self.model_name, "checksum")
-        if not wp.exists():
-            raise RuntimeError(
-                f"Checksum: no weights file found at {wp}.\n"
-                f"  Run: save --weights  to save weights for column check."
-            )
-
-        wdata = torch.load(wp, weights_only=False)
-        for name, wrapper in self.wrapped.items():
-            if name in wdata and "weights" in wdata[name]:
-                wrapper.set_baseline(
-                    {
-                        "weights": wdata[name]["weights"],
-                        "bias": wdata[name].get("bias"),
-                    }
+        if self.correction is not None:
+            wp = weights_path(self.model_name, "checksum")
+            if not wp.exists():
+                raise RuntimeError(
+                    f"Checksum: no weights file found at {wp}.\n"
+                    f"  Run: save --weights  to save weights for column check."
                 )
-        print(f"Loaded checksum weights from {wp}")
+            wdata = torch.load(wp, weights_only=False)
+            for name, wrapper in self.wrapped.items():
+                if name in wdata and "weights" in wdata[name]:
+                    wrapper.set_baseline(
+                        {
+                            "weights": wdata[name]["weights"],
+                            "bias": wdata[name].get("bias"),
+                        }
+                    )
+            print(f"Loaded checksum weights from {wp}")
 
         if verbose:
             for name, w in self.wrapped.items():
                 if name in data:
                     print(f"  {name}: row atol={w.atol:.2e} rtol={w.rtol:.2e}  col atol={w.atol_col:.2e} rtol={w.rtol_col:.2e}")
-
-        if self.correction in ("zero", "correct") and not any(
-            self.wrapped[n].clean_weights is not None for n in self.wrapped
-        ):
-            print(
-                "Warning: correction enabled but no weights found. Run save --weights first."
-            )
 
         return True
 
@@ -607,7 +596,7 @@ class Checksum:
         return {
             "method": self.name,
             "layers_checked": len(self.wrapped),
-            "weight_faults": len({(f.layer, f.feature) for f in col_faults}),
+            "weight_faults": len({f.layer for f in faults}),
             "row_check_failures": len(row_faults),
             "faults": [
                 {
