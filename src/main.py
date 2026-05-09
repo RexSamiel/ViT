@@ -121,6 +121,14 @@ def run(global_args, commands):
         if global_args.info and global_args.repeat > 1:
             print(f"\n{'=' * 60}\nRUN {run_idx + 1}/{global_args.repeat}\n{'=' * 60}")
 
+        # Reset per-run accumulators (must come before arming faults)
+        if acc:
+            acc.reset()
+        if sdc:
+            sdc.reset()
+        if detector:
+            detector.reset()
+
         # Inject faults
         if injector:
             if fi_args is not None and fi_args.fault_seed is not None:
@@ -134,13 +142,17 @@ def run(global_args, commands):
             if global_args.info:
                 injector.print_info()
 
-        # Reset per-run accumulators
-        if acc:
-            acc.reset()
-        if sdc:
-            sdc.reset()
-        if detector:
-            detector.reset()
+        # Arm input activation fault injection (after detector.reset(), before inference)
+        if (fi_args is not None and getattr(fi_args, "input_faults", 0) > 0
+                and detector is not None and hasattr(detector, "select_random_input_layers")):
+            input_bit_range = (
+                parse_bit_range(fi_args.input_bit_range)
+                if getattr(fi_args, "input_bit_range", None)
+                else bit_range
+            )
+            detector.select_random_input_layers(fi_args.input_faults, input_bit_range)
+            if global_args.info:
+                print(f"Input fault armed in: {detector.get_input_injected_layers()}")
 
         times_ms: list[float] = []
 
@@ -191,14 +203,21 @@ def run(global_args, commands):
                 weight_detected = {f.layer for f in detector.get_faults()}
                 input_detected = set()
 
-            for layer in injected_layers | weight_detected | input_detected:
+            input_injected_layers = (
+                set(detector.get_input_injected_layers())
+                if hasattr(detector, "get_input_injected_layers") else set()
+            )
+
+            for layer in injected_layers | weight_detected | input_detected | input_injected_layers:
                 s = layer_stats.setdefault(
                     layer,
                     {
                         "injected": 0,
                         "detected": 0,
                         "false_positive": 0,
-                        "input_faults": 0,
+                        "input_injected": 0,
+                        "input_detected": 0,
+                        "input_false_positive": 0,
                     },
                 )
                 if layer in injected_layers:
@@ -207,11 +226,24 @@ def run(global_args, commands):
                         s["detected"] += 1
                 elif layer in weight_detected:
                     s["false_positive"] += 1
-                if layer in input_detected:
-                    s["input_faults"] += 1
+
+                if layer in input_injected_layers:
+                    s["input_injected"] += 1
+                    if layer in input_detected:
+                        s["input_detected"] += 1
+                elif layer in input_detected:
+                    s["input_false_positive"] += 1
 
             # Verbose per-run fault detail
             if global_args.info:
+                if hasattr(detector, "get_input_fault_details"):
+                    for d in detector.get_input_fault_details():
+                        print(
+                            f"Input fault @ {d['layer']}  "
+                            f"[b={d['b']}, token={d['n']}, feat={d['c']}]  "
+                            f"bit={d['bit']}  "
+                            f"{d['original']:.6e} → {d['corrupted']:.6e}"
+                        )
                 detector.print_results()
 
         if injector:
@@ -321,7 +353,7 @@ def run(global_args, commands):
                 cs_zero.remove()
 
     if global_args.output and all_runs:
-        _save_json(global_args.output, all_runs, global_args, fi_args, hr_args, acc, sdc)
+        _save_json(global_args.output, all_runs, global_args, fi_args, hr_args, acc, sdc, layer_stats)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -371,7 +403,7 @@ def _print_timing(all_runs: list[dict], fi_args, global_args):
         )
 
 
-def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc):
+def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc, layer_stats: dict | None = None):
     """Append an aggregated summary to the output JSON file."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,14 +417,14 @@ def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_
         except (json.JSONDecodeError, OSError):
             pass
 
-    existing.append(_build_json_summary(all_runs, global_args, fi_args, hr_args, acc, sdc))
+    existing.append(_build_json_summary(all_runs, global_args, fi_args, hr_args, acc, sdc, layer_stats))
 
     with open(path, "w") as f:
         json.dump(existing, f, indent=2)
     print(f"\nSaved results to {output_path}")
 
 
-def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc) -> dict:
+def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc, layer_stats: dict | None = None) -> dict:
     """Build the plot-compatible aggregated summary dict."""
     import torch as _torch
     n: int = len(all_runs)
@@ -408,11 +440,16 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
     correction = getattr(hr_args, "correction", None) if hr_args else None
     bit_range_str = getattr(fi_args, "bit_range", None) if fi_args else None
 
+    input_bit_range_str = getattr(fi_args, "input_bit_range", None) if fi_args else None
+    input_faults_per_run = getattr(fi_args, "input_faults", 0) if fi_args else 0
+
     summary["gpu"] = gpu_name
     summary["model"] = global_args.model
     summary["method"] = method
     summary["correction"] = correction
     summary["bit_range"] = bit_range_str
+    summary["input_bit_range"] = input_bit_range_str
+    summary["input_faults_per_run"] = input_faults_per_run
     summary["batch_size"] = global_args.batch_size
     summary["max_batches"] = global_args.max_batches
 
@@ -433,13 +470,28 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
     if detection_runs:
         detected = sum(1 for d in detection_runs if d.get("weight_faults", 0) > 0)
         summary["detection_accuracy"] = round(100.0 * detected / len(detection_runs), 1)
-        input_counts = [d.get("input_faults", 0) for d in detection_runs]
-        summary["input_detections"] = sum(input_counts) if any(input_counts) else None
-        summary["false_positives"] = None
+        fp = sum(s["false_positive"] for s in layer_stats.values()) if layer_stats else 0
+        summary["false_positives"] = fp if layer_stats else None
+
+        if input_faults_per_run > 0:
+            # System-level: did ANY layer's input check fire?
+            # Propagation detections in downstream layers are valid — not false positives.
+            runs_with_input_detection = sum(
+                1 for r in all_runs
+                if r.get("detection", {}).get("input_faults", 0) > 0
+            )
+            summary["input_detection_accuracy"] = round(
+                100.0 * runs_with_input_detection / len(all_runs), 1
+            )
+        else:
+            summary["input_detection_accuracy"] = None
+        summary["input_false_positives"] = None  # not measurable in fault injection runs
     else:
         summary["detection_accuracy"] = None
-        summary["input_detections"] = None
         summary["false_positives"] = None
+        summary["input_detection_accuracy"] = None
+        summary["input_false_positives"] = None
+
 
     # ── Timing ────────────────────────────────────────────────────────────────
     all_batch_ms = [t for r in all_runs for t in r.get("times_ms", [])]

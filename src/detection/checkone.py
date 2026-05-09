@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from core.bits import flip_bit
 from core.config import calibration_path
 from core.layers import unwrap_layers, wrap_layers
 
@@ -65,6 +67,10 @@ class _Wrapper(nn.Module):
         self._cal_count = 0
         self._cal_weight_check: torch.Tensor | None = None
 
+        self._input_fault_pending: bool = False
+        self._input_fault_bit_range: list[int] | None = None
+        self._last_input_fault: dict | None = None
+
     @property
     def weight(self):
         return self.weights_ext[: self.C_out]
@@ -85,6 +91,24 @@ class _Wrapper(nn.Module):
             x = x.flatten(1, -2)
 
         B, N, C = x.shape
+
+        if self._input_fault_pending:
+            b = random.randint(0, B - 1)
+            n = random.randint(0, N - 1)
+            c = random.randint(0, C - 1)
+            val = x[b, n, c].detach().clone()
+            corrupted, bit_idx, orig_bits, corr_bits = flip_bit(val, bit_range=self._input_fault_bit_range)
+            x = x.clone()
+            x[b, n, c] = corrupted
+            self._input_fault_pending = False
+            self._last_input_fault = {
+                "b": b, "n": n, "c": c,
+                "bit": bit_idx,
+                "original": float(val),
+                "corrupted": float(corrupted),
+                "original_bits": orig_bits,
+                "corrupted_bits": corr_bits,
+            }
 
         if self._ones_buf is None or self._ones_buf.shape != (B, 1, C):
             self._ones_buf = x.new_ones(B, 1, C)
@@ -152,7 +176,7 @@ class _Wrapper(nn.Module):
         margin = (self.input_max - self.input_min) * 0.1
         low = self.input_min - margin
         high = self.input_max + margin
-        bad_values = (input_check < low) | (input_check > high)
+        bad_values = (input_check < low) | (input_check > high) | torch.isnan(input_check)
         if not bad_values.any():
             return []
         indices = bad_values.nonzero(as_tuple=False)
@@ -290,6 +314,7 @@ class CheckOne:
         for w in self.wrapped.values():
             w.correction = correction
 
+        self._input_injected_layers: list[str] = []
         print(f"[{self.name}] Wrapped {len(self.wrapped)} layers")
 
     def calibrate(
@@ -453,6 +478,34 @@ class CheckOne:
         for w in self.wrapped.values():
             w.weight_faults = []
             w.input_faults = []
+            w._input_fault_pending = False
+            w._last_input_fault = None
+        self._input_injected_layers = []
+
+    def get_input_fault_details(self) -> list[dict]:
+        """Return injected input fault details (original/corrupted value, bit, indices)."""
+        details = []
+        for name, w in self.wrapped.items():
+            if w._last_input_fault is not None:
+                details.append({"layer": name, **w._last_input_fault})
+        return details
+
+    def arm_input_fault(self, layer_name: str, bit_range: list[int] | None = None):
+        """Arm one wrapped layer to inject an input activation fault on its next forward call."""
+        w = self.wrapped[layer_name]
+        w._input_fault_pending = True
+        w._input_fault_bit_range = bit_range
+        self._input_injected_layers.append(layer_name)
+
+    def select_random_input_layers(self, count: int, bit_range: list[int] | None = None):
+        """Randomly select and arm `count` layers for input fault injection."""
+        chosen = random.sample(list(self.wrapped.keys()), min(count, len(self.wrapped)))
+        for name in chosen:
+            self.arm_input_fault(name, bit_range)
+
+    def get_input_injected_layers(self) -> list[str]:
+        """Return layers that were armed for input fault injection this run."""
+        return list(self._input_injected_layers)
 
     def start_threshold_calibration(self):
         """Activate threshold calibration hooks (fire on every subsequent net(images))."""
@@ -489,26 +542,39 @@ class CheckOne:
         col = max(len(l) for l in layer_stats) + 2
         print(
             f"\nDetection Summary ({self.name}):\n"
-            f"  {'Layer':<{col}}  {'Injected':>8}  {'Detected':>8}  {'Rate':>7}  {'False+':>6}  {'Input Det':>9}\n"
-            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}"
+            f"  {'Layer':<{col}}  {'W_Inj':>6}  {'W_Det':>6}  {'W_Rate':>7}  {'W_FP':>5}"
+            f"  {'I_Inj':>6}  {'I_Det':>6}  {'I_Rate':>7}  {'I_FP':>5}\n"
+            f"  {'-' * col}  {'------':>6}  {'------':>6}  {'-------':>7}  {'-----':>5}"
+            f"  {'------':>6}  {'------':>6}  {'-------':>7}  {'-----':>5}"
         )
         for layer in sorted(layer_stats):
             s = layer_stats[layer]
-            inj = s["injected"]
-            det = s["detected"]
-            fp = s["false_positive"]
-            inp = s.get("input_faults", 0)
-            rate = f"{100 * det / inj:.1f}%" if inj else "  n/a"
-            print(f"  {layer:<{col}}  {inj:>8}  {det:>8}  {rate:>7}  {fp:>6}  {inp:>9}")
+            w_inj = s["injected"]
+            w_det = s["detected"]
+            w_fp  = s["false_positive"]
+            i_inj = s.get("input_injected", 0)
+            i_det = s.get("input_detected", 0)
+            i_fp  = s.get("input_false_positive", 0)
+            w_rate = f"{100 * w_det / w_inj:.1f}%" if w_inj else "    n/a"
+            i_rate = f"{100 * i_det / i_inj:.1f}%" if i_inj else "    n/a"
+            print(
+                f"  {layer:<{col}}  {w_inj:>6}  {w_det:>6}  {w_rate:>7}  {w_fp:>5}"
+                f"  {i_inj:>6}  {i_det:>6}  {i_rate:>7}  {i_fp:>5}"
+            )
 
-        total_inj = sum(s["injected"] for s in layer_stats.values())
-        total_det = sum(s["detected"] for s in layer_stats.values())
-        total_fp = sum(s["false_positive"] for s in layer_stats.values())
-        total_inp = sum(s.get("input_faults", 0) for s in layer_stats.values())
-        total_rate = f"{100 * total_det / total_inj:.1f}%" if total_inj else "  n/a"
+        total_w_inj  = sum(s["injected"]             for s in layer_stats.values())
+        total_w_det  = sum(s["detected"]             for s in layer_stats.values())
+        total_w_fp   = sum(s["false_positive"]       for s in layer_stats.values())
+        total_i_inj  = sum(s.get("input_injected",        0) for s in layer_stats.values())
+        total_i_det  = sum(s.get("input_detected",        0) for s in layer_stats.values())
+        total_i_fp   = sum(s.get("input_false_positive",  0) for s in layer_stats.values())
+        w_rate = f"{100 * total_w_det / total_w_inj:.1f}%" if total_w_inj else "    n/a"
+        i_rate = f"{100 * total_i_det / total_i_inj:.1f}%" if total_i_inj else "    n/a"
         print(
-            f"  {'-' * col}  {'--------':>8}  {'--------':>8}  {'-------':>7}  {'------':>6}  {'---------':>9}\n"
-            f"  {'TOTAL':<{col}}  {total_inj:>8}  {total_det:>8}  {total_rate:>7}  {total_fp:>6}  {total_inp:>9}"
+            f"  {'-' * col}  {'------':>6}  {'------':>6}  {'-------':>7}  {'-----':>5}"
+            f"  {'------':>6}  {'------':>6}  {'-------':>7}  {'-----':>5}\n"
+            f"  {'TOTAL':<{col}}  {total_w_inj:>6}  {total_w_det:>6}  {w_rate:>7}  {total_w_fp:>5}"
+            f"  {total_i_inj:>6}  {total_i_det:>6}  {i_rate:>7}  {total_i_fp:>5}"
         )
 
     def print_timing_summary(self, all_runs: list[dict]):

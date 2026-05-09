@@ -26,8 +26,9 @@ DB_DIR="results/detection_results"
 # ── Which experiment blocks to run (true/false) ───────────────────────────────
 RUN_BASELINE=false
 RUN_DETECTION=false
-RUN_ZERO=true
+RUN_ZERO=false
 RUN_CORRECTION=false
+RUN_INPUT_DETECTION=true
 
 # ═════════════════════════════════════════════════════════════════════════════
 # EXPERIMENT SETTINGS
@@ -57,6 +58,12 @@ BIT_MODES=(
 METHODS=(
   #checksum
   checkone
+)
+
+# Input bit range label → --input_bit_range value
+declare -A INPUT_BIT_MODES
+INPUT_BIT_MODES=(
+  [bit30_only]="30,30"
 )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -163,6 +170,24 @@ if $RUN_CORRECTION; then
         run_and_merge "correction" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction correct
       done
+    done
+  done
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# INPUT DETECTION  (input activation fault injection + checkone detection)
+# ═════════════════════════════════════════════════════════════════════════════
+
+if $RUN_INPUT_DETECTION; then
+  echo "═══════════════════════════════════════"
+  echo "  INPUT FAULT DETECTION"
+  echo "═══════════════════════════════════════"
+  for MODEL in "${MODELS[@]}"; do
+    for INPUT_BIT_LABEL in "${!INPUT_BIT_MODES[@]}"; do
+      INPUT_BIT_ARG="${INPUT_BIT_MODES[$INPUT_BIT_LABEL]}"
+      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0 --input_faults 1 --input_bit_range $INPUT_BIT_ARG"
+      run_and_merge "input_detection" \
+        -m "$MODEL" $FI_ARGS hr --method checkone --detect all
     done
   done
 fi

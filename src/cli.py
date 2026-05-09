@@ -74,6 +74,10 @@ class ChainedArgumentParser:
                             help="Transformer block index for output metadata (0-based)")
         parser.add_argument("--layer_prefix", type=str, default=None,
                             help="Filter layers by exact name prefix, e.g. 'layers.2.blocks.3'")
+        parser.add_argument("--input_faults", type=int, default=0,
+                            help="Number of input activation faults to inject per run (requires hr --detect)")
+        parser.add_argument("--input_bit_range", type=str, default=None,
+                            help="Bit range for input activation flips, e.g. '23,31' or '0,31^30'. Defaults to --bit_range if not set.")
         return parser
 
     def _create_hr_parser(self):

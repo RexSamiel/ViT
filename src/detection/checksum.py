@@ -58,7 +58,6 @@ class _Wrapper(nn.Module):
         self.col_faults: list[tuple[int, int, float]] = []
 
         self.correction: str | None = None
-        self._x_ext_buf: torch.Tensor | None = None  # reused across calls
 
 
     @property
@@ -82,11 +81,7 @@ class _Wrapper(nn.Module):
         B, N, C_in = x.shape
 
         x_token_sums = x.sum(dim=1, keepdim=True)
-        if self._x_ext_buf is None or self._x_ext_buf.shape != (B, N + 1, C_in):
-            self._x_ext_buf = x.new_empty(B, N + 1, C_in)
-        self._x_ext_buf[:, :N] = x
-        self._x_ext_buf[:, N:] = x_token_sums
-        x_ext = self._x_ext_buf
+        x_ext = torch.cat([x, x_token_sums], dim=1)
 
         out_ext = F.linear(x_ext, self.weights_ext)
 
@@ -214,13 +209,8 @@ class _Wrapper(nn.Module):
         self, actual_row: torch.Tensor, golden_row: torch.Tensor,
         actual_col: torch.Tensor, x_token_sums: torch.Tensor, token_out_sums: torch.Tensor,
     ):
-        """Accumulate per-batch noise for row and col checks — stays on GPU.
-        Uses the same col-check path as inference so atol_col matches at runtime.
-        """
+        """Accumulate per-batch noise for row and col checks — stays on GPU."""
         self._cal_abs_buf.append((actual_row - golden_row).abs().max())
-        # Calibrate col from token_out_sums — this is the path used during clean
-        # inference in both detection and zeroing modes (F.linear path only fires
-        # after row faults are already detected, which never happens on clean data).
         self._cal_abs_col_buf.append((actual_col - token_out_sums).abs().max())
 
     def threshold_calibrate_end(self):
