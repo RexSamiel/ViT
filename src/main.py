@@ -520,6 +520,8 @@ def _build_json_summary(
     summary["bit_range"] = bit_range_str
     summary["input_bit_range"] = input_bit_range_str
     summary["input_faults_per_run"] = input_faults_per_run
+    faults_per_run = getattr(fi_args, "faults", 0) if fi_args else 0
+    summary["faults_per_run"] = faults_per_run or 0
     summary["batch_size"] = global_args.batch_size
     summary["max_batches"] = global_args.max_batches
 
