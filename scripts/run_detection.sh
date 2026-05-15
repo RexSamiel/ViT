@@ -11,29 +11,31 @@
 set -euo pipefail
 
 # ═════════════════════════════════════════════════════════════════════════════
-# OUTPUT CONFIGURATION
+# FAULT INJECTION
+# Select which fault types to inject. Both false = no fault injection (clean /
+# overhead runs). Both can be true — the script runs each section separately.
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Python interpreter
+INJECT_WEIGHT_FAULTS=false # bit flips in model weights
+INJECT_INPUT_FAULTS=false  # bit flips in input activations
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EXPERIMENTS
+# Which experiment types to run. Applied to every enabled fault type above.
+# ═════════════════════════════════════════════════════════════════════════════
+
+RUN_BASELINE=false # no detection — measures accuracy / timing with faults
+RUN_DETECTION=true # detection active, no correction
+RUN_ZERO=true      # detection active, zero-out correction
+# RUN_CORRECTION=false  # detection active, arithmetic correction (rarely used)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SETTINGS
+# ═════════════════════════════════════════════════════════════════════════════
+
 PYTHON="${PYTHON:-.venv/bin/python}"
-
-# Single output file where all run results are appended
 OUTPUT_FILE="results/detection_results/detection_measurements/runs.json"
-
-# Folder containing the database JSONs and merge.py
 DB_DIR="results/detection_results"
-
-# ── Which experiment blocks to run (true/false) ───────────────────────────────
-RUN_BASELINE=false
-RUN_DETECTION=false
-RUN_ZERO=false
-RUN_CORRECTION=false
-RUN_INPUT_DETECTION=true
-RUN_FAULT=false
-
-# ═════════════════════════════════════════════════════════════════════════════
-# EXPERIMENT SETTINGS
-# ═════════════════════════════════════════════════════════════════════════════
 
 WARMUP=10
 REPEATS=100
@@ -48,7 +50,12 @@ MODELS=(
   swin_tiny
 )
 
-# Bit mode label → --bit_range value (empty = unrestricted, no flag passed)
+METHODS=(
+  checkone
+  #checksum
+)
+
+# Weight fault bit range label → --bit_range value
 declare -A BIT_MODES
 BIT_MODES=(
   [unrestricted]=""
@@ -56,12 +63,7 @@ BIT_MODES=(
   [without_mantissa]="23,31"
 )
 
-METHODS=(
-  #checksum
-  checkone
-)
-
-# Input bit range label → --input_bit_range value
+# Input fault bit range label → --input_bit_range value
 declare -A INPUT_BIT_MODES
 INPUT_BIT_MODES=(
   [bit30_only]="30,30"
@@ -72,7 +74,6 @@ INPUT_BIT_MODES=(
 
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Resolve to absolute paths before any cd
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ABS_OUTPUT="${REPO_ROOT}/${OUTPUT_FILE}"
 ABS_DB_DIR="${REPO_ROOT}/${DB_DIR}"
@@ -83,8 +84,8 @@ mkdir -p "$(dirname "$ABS_OUTPUT")"
 
 run_and_merge() {
   local experiment="$1"
-  local model_arg="$2" # -m
-  local model_val="$3" # vit_tiny etc.
+  local model_arg="$2"
+  local model_val="$3"
   shift 3
 
   echo ""
@@ -97,122 +98,86 @@ run_and_merge() {
 
 cd "${REPO_ROOT}/src"
 
+COMMON="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP"
+
 # ═════════════════════════════════════════════════════════════════════════════
-# BASELINE  (no detection, fault injection only for timing/accuracy)
+# WEIGHT / NO-FAULT EXPERIMENTS
+# Runs when INJECT_WEIGHT_FAULTS=true (weight faults) or both flags are false
+# (clean runs). Loops over BIT_MODES when injecting, single unrestricted pass
+# when not (bit range is irrelevant without fault injection).
 # ═════════════════════════════════════════════════════════════════════════════
 
-if $RUN_BASELINE; then
+if $INJECT_WEIGHT_FAULTS; then
+  ACTIVE_BIT_LABELS=("${!BIT_MODES[@]}")
+  FI_CMD="fi --faults $FAULTS --fault_seed $FAULT_SEED"
   echo "═══════════════════════════════════════"
-  echo "  BASELINE"
+  echo "  WEIGHT FAULT EXPERIMENTS"
   echo "═══════════════════════════════════════"
-  for MODEL in "${MODELS[@]}"; do
-    for BIT_LABEL in "${!BIT_MODES[@]}"; do
-      BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
-      [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
-      run_and_merge "baseline" -m "$MODEL" $FI_ARGS
-    done
-  done
+else
+  ACTIVE_BIT_LABELS=(unrestricted)
+  FI_CMD="fi --faults 0"
+  echo "═══════════════════════════════════════"
+  echo "  CLEAN / OVERHEAD EXPERIMENTS"
+  echo "═══════════════════════════════════════"
 fi
 
-# ═════════════════════════════════════════════════════════════════════════════
-# DETECTION  (fault injection + detection, no correction)
-# ═════════════════════════════════════════════════════════════════════════════
+for MODEL in "${MODELS[@]}"; do
+  for BIT_LABEL in "${ACTIVE_BIT_LABELS[@]}"; do
+    BIT_ARG="${BIT_MODES[$BIT_LABEL]:-}"
+    FI_ARGS="$COMMON $FI_CMD"
+    [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
 
-if $RUN_DETECTION; then
-  echo "═══════════════════════════════════════"
-  echo "  DETECTION"
-  echo "═══════════════════════════════════════"
-  for MODEL in "${MODELS[@]}"; do
+    if $RUN_BASELINE; then
+      run_and_merge "baseline" -m "$MODEL" $FI_ARGS
+    fi
+
     for METHOD in "${METHODS[@]}"; do
-      for BIT_LABEL in "${!BIT_MODES[@]}"; do
-        BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
-        [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
+      if $RUN_DETECTION; then
         run_and_merge "detection" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all
-      done
-    done
-  done
-fi
-
-# ═════════════════════════════════════════════════════════════════════════════
-# ZERO  (fault injection + detection + correction=zero)
-# ═════════════════════════════════════════════════════════════════════════════
-
-if $RUN_ZERO; then
-  echo "═══════════════════════════════════════"
-  echo "  ZERO CORRECTION"
-  echo "═══════════════════════════════════════"
-  for MODEL in "${MODELS[@]}"; do
-    for METHOD in "${METHODS[@]}"; do
-      for BIT_LABEL in "${!BIT_MODES[@]}"; do
-        BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
-        [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
+      fi
+      if $RUN_ZERO; then
         run_and_merge "zero" \
           -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction zero
-      done
+      fi
+      # if $RUN_CORRECTION; then
+      #   run_and_merge "correction" \
+      #     -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction correct
+      # fi
     done
   done
-fi
+done
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CORRECTION  (fault injection + detection + correction=correct)
+# INPUT FAULT EXPERIMENTS
+# Only runs when INJECT_INPUT_FAULTS=true. Loops over INPUT_BIT_MODES.
+# baseline → baseline.json  |  detection → detection.json  |  zero → zero.json
+# All stored with fault_type="input" so they never overwrite weight/clean runs.
 # ═════════════════════════════════════════════════════════════════════════════
 
-if $RUN_CORRECTION; then
+if $INJECT_INPUT_FAULTS; then
   echo "═══════════════════════════════════════"
-  echo "  ARITHMETIC CORRECTION"
-  echo "═══════════════════════════════════════"
-  for MODEL in "${MODELS[@]}"; do
-    for METHOD in "${METHODS[@]}"; do
-      for BIT_LABEL in "${!BIT_MODES[@]}"; do
-        BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults $FAULTS --fault_seed $FAULT_SEED"
-        [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
-        run_and_merge "correction" \
-          -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction correct
-      done
-    done
-  done
-fi
-
-# ═════════════════════════════════════════════════════════════════════════════
-# INPUT DETECTION  (input activation fault injection + checkone detection)
-# ═════════════════════════════════════════════════════════════════════════════
-
-if $RUN_INPUT_DETECTION; then
-  echo "═══════════════════════════════════════"
-  echo "  INPUT FAULT DETECTION"
+  echo "  INPUT FAULT EXPERIMENTS"
   echo "═══════════════════════════════════════"
   for MODEL in "${MODELS[@]}"; do
     for INPUT_BIT_LABEL in "${!INPUT_BIT_MODES[@]}"; do
       INPUT_BIT_ARG="${INPUT_BIT_MODES[$INPUT_BIT_LABEL]}"
-      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0 --input_faults 1"
+      FI_ARGS="$COMMON fi --faults 0 --input_faults 1"
       [ -n "$INPUT_BIT_ARG" ] && FI_ARGS="$FI_ARGS --input_bit_range $INPUT_BIT_ARG"
-      run_and_merge "input_detection" \
-        -m "$MODEL" $FI_ARGS hr --method checkone --detect all
-    done
-  done
-fi
 
-# ═════════════════════════════════════════════════════════════════════════════
-# OVERHEAD  (no fault injection, detection active — pure timing overhead)
-# ═════════════════════════════════════════════════════════════════════════════
+      if $RUN_BASELINE; then
+        run_and_merge "baseline" -m "$MODEL" $FI_ARGS
+      fi
 
-if $RUN_FAULT; then
-  echo "═══════════════════════════════════════"
-  echo "  OVERHEAD (no faults)"
-  echo "═══════════════════════════════════════"
-  for MODEL in "${MODELS[@]}"; do
-    for METHOD in "${METHODS[@]}"; do
-      for BIT_LABEL in "${!BIT_MODES[@]}"; do
-        BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
-        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0"
-        [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
-        run_and_merge "detection" \
-          -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all
+      for METHOD in "${METHODS[@]}"; do
+        if $RUN_DETECTION; then
+          run_and_merge "detection" \
+            -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all
+        fi
+        if $RUN_ZERO; then
+          run_and_merge "zero" \
+            -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all --correction zero
+        fi
       done
     done
   done
