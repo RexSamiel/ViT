@@ -34,6 +34,8 @@ class InputInjector:
         layers: str = "all",
         bit_range: list[int] | None = None,
         layer_shapes: dict[str, tuple] | None = None,
+        block_idx: int | None = None,
+        layer_prefix: str | None = None,
     ):
         if hasattr(model, "net"):
             self.model = model.net
@@ -41,6 +43,8 @@ class InputInjector:
             self.model = model
         self.layer_filter = layers
         self.bit_range = bit_range
+        self.block_idx = block_idx
+        self.layer_prefix = layer_prefix
 
         self._layers: dict[str, nn.Linear] = self._get_layers()
         self._layer_shapes: dict[str, tuple] = layer_shapes or {}
@@ -57,6 +61,12 @@ class InputInjector:
             total += s
         self._total = total
 
+        if not self._layers:
+            raise ValueError(
+                f"No layers matched filter: layers={layers!r}, "
+                f"block_idx={block_idx}, layer_prefix={layer_prefix!r}"
+            )
+
         self._hooks: list = []
         self.faults: list[InjectedInputFault] = []
 
@@ -65,7 +75,12 @@ class InputInjector:
         for name, module in self.model.named_modules():
             if isinstance(module, nn.Linear) and name and ".original" not in name:
                 layers[name] = module
-        return filter_layers(layers, self.layer_filter)
+        layers = filter_layers(layers, self.layer_filter)
+        if self.block_idx is not None:
+            layers = {n: l for n, l in layers.items() if f"blocks.{self.block_idx}." in n}
+        if self.layer_prefix is not None:
+            layers = {n: l for n, l in layers.items() if self.layer_prefix in n}
+        return layers
 
     def _sample_layer_and_feature(self) -> tuple[str, int]:
         """Pick a (layer_name, feature_idx) proportional to in_features."""

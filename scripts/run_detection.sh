@@ -24,7 +24,7 @@ INJECT_INPUT_FAULTS=false  # bit flips in input activations
 # Which experiment types to run. Applied to every enabled fault type above.
 # ═════════════════════════════════════════════════════════════════════════════
 
-RUN_BASELINE=false # no detection — measures accuracy / timing with faults
+RUN_BASELINE=ture  # no detection — measures accuracy / timing with faults
 RUN_DETECTION=true # detection active, no correction
 RUN_ZERO=true      # detection active, zero-out correction
 # RUN_CORRECTION=false  # detection active, arithmetic correction (rarely used)
@@ -52,7 +52,7 @@ MODELS=(
 
 METHODS=(
   checkone
-  #checksum
+  checksum
 )
 
 # Weight fault bit range label → --bit_range value

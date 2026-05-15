@@ -114,7 +114,12 @@ def run(global_args, commands):
                 "Layer shapes not saved. Run first: python -m cli -m MODEL save --shapes"
             )
         input_injector = InputInjector(
-            model, layers=fi_args.layers, bit_range=input_bit_range, layer_shapes=layer_shapes
+            model,
+            layers=fi_args.layers,
+            bit_range=input_bit_range,
+            layer_shapes=layer_shapes,
+            block_idx=getattr(fi_args, "block", None),
+            layer_prefix=getattr(fi_args, "layer_prefix", None),
         )
 
     # Fault-free logits for SDC comparison (not used in save/pa modes)
