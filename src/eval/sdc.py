@@ -103,9 +103,16 @@ class SDCTracker:
             results["logit_sdc_rate"] = 0.0
 
         if self.sdc_magnitudes:
-            results["msdc"] = torch.cat(self.sdc_magnitudes).median().item()
+            all_mag = torch.cat(self.sdc_magnitudes)
+            results["msdc"] = all_mag.median().item()
+            results["avg_magnitude_sdc"] = all_mag.mean().item()
+            results["min_magnitude"] = all_mag.min().item()
+            results["max_magnitude"] = all_mag.max().item()
         else:
             results["msdc"] = 0.0
+            results["avg_magnitude_sdc"] = 0.0
+            results["min_magnitude"] = 0.0
+            results["max_magnitude"] = 0.0
 
         for threshold in self.THRESHOLDS:
             key = f"sdc_{int(threshold * 100)}pct"
@@ -139,6 +146,10 @@ class SDCTracker:
         self.n_runs = 0
         self.avg_sdc_rate = 0.0
         self.avg_msdc = 0.0
+        self.all_msdc: list[float] = []
+        self.avg_magnitude_sdc = 0.0
+        self.global_min_magnitude = float("inf")
+        self.global_max_magnitude = 0.0
         self.avg_critical_top1 = 0.0
         self.avg_critical_top5 = 0.0
         self.m2_critical_top1 = 0.0
@@ -158,7 +169,14 @@ class SDCTracker:
         self.avg_sdc_rate = (self.avg_sdc_rate * (self.n_runs - 1) + sdc) / self.n_runs
 
         msdc = run_results.get("msdc", 0.0)
+        self.all_msdc.append(msdc)
         self.avg_msdc = (self.avg_msdc * (self.n_runs - 1) + msdc) / self.n_runs
+
+        mag = run_results.get("avg_magnitude_sdc", 0.0)
+        self.avg_magnitude_sdc = (self.avg_magnitude_sdc * (self.n_runs - 1) + mag) / self.n_runs
+
+        self.global_min_magnitude = min(self.global_min_magnitude, run_results.get("min_magnitude", float("inf")))
+        self.global_max_magnitude = max(self.global_max_magnitude, run_results.get("max_magnitude", 0.0))
 
         for threshold in self.THRESHOLDS:
             key = f"sdc_{int(threshold * 100)}pct"
@@ -206,9 +224,25 @@ class SDCTracker:
             else 0.0
         )
 
+        sorted_msdc = sorted(self.all_msdc)
+        n = len(sorted_msdc)
+        if n > 0:
+            mid = n // 2
+            median_msdc = sorted_msdc[mid] if n % 2 else (sorted_msdc[mid - 1] + sorted_msdc[mid]) / 2
+            min_msdc = sorted_msdc[0]
+            max_msdc = sorted_msdc[-1]
+        else:
+            median_msdc = min_msdc = max_msdc = 0.0
+
         summary = {
             "avg_sdc_rate": self.avg_sdc_rate,
             "avg_msdc": self.avg_msdc,
+            "avg_magnitude_sdc": self.avg_magnitude_sdc,
+            "min_magnitude": self.global_min_magnitude if self.global_min_magnitude != float("inf") else 0.0,
+            "max_magnitude": self.global_max_magnitude,
+            "median_msdc": median_msdc,
+            "min_msdc": min_msdc,
+            "max_msdc": max_msdc,
             "avg_critical_top1": self.avg_critical_top1,
             "avg_critical_top5": self.avg_critical_top5,
             "std_critical_top1": std_top1,
@@ -236,7 +270,13 @@ class SDCTracker:
             pct = 100.0 * s["total_crash_samples"] / s["total_eval_samples"] if s["total_eval_samples"] else 0.0
             print(f"  Crashes:        {s['total_crash_samples']} samples ({pct:.1f}% of all samples)")
         print(f"  Logit SDC Rate: {s['avg_sdc_rate']:.2f}%")
-        print(f"  MSDC (median):  {s['avg_msdc']:.6f}")
+        print(f"  MSDC avg:       {s['avg_msdc']:.6f}")
+        print(f"  Avg magnitude:  {s['avg_magnitude_sdc']:.6f}")
+        print(f"  Magnitude min:  {s['min_magnitude']:.6f}")
+        print(f"  Magnitude max:  {s['max_magnitude']:.6f}")
+        print(f"  MSDC median:    {s['median_msdc']:.6f}")
+        print(f"  MSDC min:       {s['min_msdc']:.6f}")
+        print(f"  MSDC max:       {s['max_msdc']:.6f}")
         print()
         print(f"  Threshold-based SDC:")
         for threshold in self.THRESHOLDS:

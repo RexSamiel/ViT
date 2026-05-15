@@ -57,7 +57,9 @@ class Baseline:
     def load(self, path=None, verbose: bool = False) -> bool:
         return True
 
-    def save(self, path=None, include_weights: bool = False, save_calibration: bool = True):
+    def save(
+        self, path=None, include_weights: bool = False, save_calibration: bool = True
+    ):
         pass
 
     def reset(self):
@@ -87,13 +89,15 @@ class Baseline:
         timed = [r for r in all_runs if r.get("times_ms")]
         if not timed:
             return
-        per_run_ms  = [sum(r["times_ms"]) for r in timed]
+        per_run_ms = [sum(r["times_ms"]) for r in timed]
         per_run_mpb = [ms / len(r["times_ms"]) for ms, r in zip(per_run_ms, timed)]
         total_ms = sum(per_run_ms)
-        avg_mpb  = sum(per_run_mpb) / len(per_run_mpb)
-        std_mpb  = (
-            (sum((v - avg_mpb) ** 2 for v in per_run_mpb) / (len(per_run_mpb) - 1)) ** 0.5
-            if len(per_run_mpb) > 1 else 0.0
+        avg_mpb = sum(per_run_mpb) / len(per_run_mpb)
+        std_mpb = (
+            (sum((v - avg_mpb) ** 2 for v in per_run_mpb) / (len(per_run_mpb) - 1))
+            ** 0.5
+            if len(per_run_mpb) > 1
+            else 0.0
         )
         print(
             f"\nDetection Timing — {self.name} ({len(timed)} runs):\n"

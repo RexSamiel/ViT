@@ -1,4 +1,3 @@
-import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from core.bits import flip_bit
 from core.config import calibration_path
 from core.layers import unwrap_layers, wrap_layers
 
@@ -67,10 +65,6 @@ class _Wrapper(nn.Module):
         self._cal_count = 0
         self._cal_weight_check: torch.Tensor | None = None
 
-        self._input_fault_pending: bool = False
-        self._input_fault_bit_range: list[int] | None = None
-        self._last_input_fault: dict | None = None
-
     @property
     def weight(self):
         return self.weights_ext[: self.C_out]
@@ -91,24 +85,6 @@ class _Wrapper(nn.Module):
             x = x.flatten(1, -2)
 
         B, N, C = x.shape
-
-        if self._input_fault_pending:
-            b = random.randint(0, B - 1)
-            n = random.randint(0, N - 1)
-            c = random.randint(0, C - 1)
-            val = x[b, n, c].detach().clone()
-            corrupted, bit_idx, orig_bits, corr_bits = flip_bit(val, bit_range=self._input_fault_bit_range)
-            x = x.clone()
-            x[b, n, c] = corrupted
-            self._input_fault_pending = False
-            self._last_input_fault = {
-                "b": b, "n": n, "c": c,
-                "bit": bit_idx,
-                "original": float(val),
-                "corrupted": float(corrupted),
-                "original_bits": orig_bits,
-                "corrupted_bits": corr_bits,
-            }
 
         if self._ones_buf is None or self._ones_buf.shape != (B, 1, C):
             self._ones_buf = x.new_ones(B, 1, C)
@@ -314,7 +290,6 @@ class CheckOne:
         for w in self.wrapped.values():
             w.correction = correction
 
-        self._input_injected_layers: list[str] = []
         print(f"[{self.name}] Wrapped {len(self.wrapped)} layers")
 
     def calibrate(
@@ -478,34 +453,6 @@ class CheckOne:
         for w in self.wrapped.values():
             w.weight_faults = []
             w.input_faults = []
-            w._input_fault_pending = False
-            w._last_input_fault = None
-        self._input_injected_layers = []
-
-    def get_input_fault_details(self) -> list[dict]:
-        """Return injected input fault details (original/corrupted value, bit, indices)."""
-        details = []
-        for name, w in self.wrapped.items():
-            if w._last_input_fault is not None:
-                details.append({"layer": name, **w._last_input_fault})
-        return details
-
-    def arm_input_fault(self, layer_name: str, bit_range: list[int] | None = None):
-        """Arm one wrapped layer to inject an input activation fault on its next forward call."""
-        w = self.wrapped[layer_name]
-        w._input_fault_pending = True
-        w._input_fault_bit_range = bit_range
-        self._input_injected_layers.append(layer_name)
-
-    def select_random_input_layers(self, count: int, bit_range: list[int] | None = None):
-        """Randomly select and arm `count` layers for input fault injection."""
-        chosen = random.sample(list(self.wrapped.keys()), min(count, len(self.wrapped)))
-        for name in chosen:
-            self.arm_input_fault(name, bit_range)
-
-    def get_input_injected_layers(self) -> list[str]:
-        """Return layers that were armed for input fault injection this run."""
-        return list(self._input_injected_layers)
 
     def start_threshold_calibration(self):
         """Activate threshold calibration hooks (fire on every subsequent net(images))."""

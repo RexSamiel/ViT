@@ -23,7 +23,7 @@ class InjectedFault:
 
 def _layer_weight(layer: nn.Module) -> torch.Tensor:
     """Return the weight tensor of a layer (nn.Linear or detection wrapper)."""
-    w = layer.weight  # type: ignore[union-attr]
+    w = layer.weight
     assert isinstance(w, torch.Tensor)
     return w
 
@@ -132,19 +132,6 @@ class Injector:
 
     All weights across selected layers are treated as a single pool, ensuring
     each weight has equal probability of being corrupted regardless of layer size.
-
-    Example:
-        injector = Injector(model, layers="fc1")
-
-        # Inject by count
-        injector.inject(count=5)
-
-        # Or inject by bit error rate
-        injector.inject(ber=1e-6)
-
-        # Run inference...
-        injector.print_info()
-        injector.restore()
     """
 
     def __init__(
@@ -204,7 +191,9 @@ class Injector:
                     layers[name] = module
         layers = filter_layers(layers, self.layer_filter)
         if self.block_idx is not None:
-            layers = {n: l for n, l in layers.items() if f"blocks.{self.block_idx}." in n}
+            layers = {
+                n: l for n, l in layers.items() if f"blocks.{self.block_idx}." in n
+            }
         if self.layer_prefix is not None:
             layers = {n: l for n, l in layers.items() if self.layer_prefix in n}
         return layers
@@ -222,7 +211,9 @@ class Injector:
     @property
     def layer_info(self) -> dict[str, int]:
         """Dictionary of layer names to their weight counts."""
-        return {name: _layer_weight(layer).numel() for name, layer in self._layers.items()}
+        return {
+            name: _layer_weight(layer).numel() for name, layer in self._layers.items()
+        }
 
     def inject(
         self,

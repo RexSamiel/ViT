@@ -12,17 +12,14 @@ class TestFlipBit:
     """Tests for the flip_bit function."""
 
     def test_flips_single_bit(self):
-        """flip_bit should flip exactly one bit."""
-        val = torch.tensor(1.0)
+        val = torch.Tensor(1.0)
         corrupted, bit, orig_bits, new_bits = flip_bit(val, bit=0)
 
-        # XOR should give a single 1 bit
         diff = int(orig_bits, 2) ^ int(new_bits, 2)
         assert bin(diff).count("1") == 1
 
     def test_respects_bit_range(self):
-        """flip_bit should only flip bits within the specified range."""
-        val = torch.tensor(1.0)
+        val = torch.Tensor(1.0)
 
         for _ in range(50):
             _, bit, _, _ = flip_bit(val, bit_range=(20, 25))
@@ -30,10 +27,7 @@ class TestFlipBit:
 
 
 class TestInjector:
-    """Tests for the Injector class."""
-
     def _make_model(self):
-        """Create a model with named linear layers."""
 
         class Model(nn.Module):
             def __init__(self):
@@ -47,7 +41,6 @@ class TestInjector:
         return Model()
 
     def test_injects_specified_count(self):
-        """Injector should inject the specified number of faults."""
         model = self._make_model()
 
         injector = Injector(model, layers="all")
@@ -57,7 +50,6 @@ class TestInjector:
         assert len(injector.faults) == 5
 
     def test_restore_reverts_weights(self):
-        """restore should revert weights to original values."""
         model = self._make_model()
         original_fc1 = model.fc1.weight.data.clone()
         original_fc2 = model.fc2.weight.data.clone()
@@ -65,19 +57,16 @@ class TestInjector:
         injector = Injector(model, layers="all")
         injector.inject(count=10)
 
-        # At least one weight should be different
         fc1_changed = not torch.equal(model.fc1.weight.data, original_fc1)
         fc2_changed = not torch.equal(model.fc2.weight.data, original_fc2)
         assert fc1_changed or fc2_changed
 
         injector.restore()
 
-        # Weights should match after restore
         assert torch.allclose(model.fc1.weight.data, original_fc1)
         assert torch.allclose(model.fc2.weight.data, original_fc2)
 
     def test_layer_filtering(self):
-        """Injector should respect layer filter."""
         model = self._make_model()
 
         # Only inject into fc1

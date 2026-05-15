@@ -29,6 +29,7 @@ RUN_DETECTION=false
 RUN_ZERO=false
 RUN_CORRECTION=false
 RUN_INPUT_DETECTION=true
+RUN_FAULT=false
 
 # ═════════════════════════════════════════════════════════════════════════════
 # EXPERIMENT SETTINGS
@@ -64,6 +65,9 @@ METHODS=(
 declare -A INPUT_BIT_MODES
 INPUT_BIT_MODES=(
   [bit30_only]="30,30"
+  [unrestricted]=""
+  [without_bit30]="0,31^30"
+  [without_mantissa]="23,31"
 )
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -185,9 +189,31 @@ if $RUN_INPUT_DETECTION; then
   for MODEL in "${MODELS[@]}"; do
     for INPUT_BIT_LABEL in "${!INPUT_BIT_MODES[@]}"; do
       INPUT_BIT_ARG="${INPUT_BIT_MODES[$INPUT_BIT_LABEL]}"
-      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0 --input_faults 1 --input_bit_range $INPUT_BIT_ARG"
+      FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0 --input_faults 1"
+      [ -n "$INPUT_BIT_ARG" ] && FI_ARGS="$FI_ARGS --input_bit_range $INPUT_BIT_ARG"
       run_and_merge "input_detection" \
         -m "$MODEL" $FI_ARGS hr --method checkone --detect all
+    done
+  done
+fi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# OVERHEAD  (no fault injection, detection active — pure timing overhead)
+# ═════════════════════════════════════════════════════════════════════════════
+
+if $RUN_FAULT; then
+  echo "═══════════════════════════════════════"
+  echo "  OVERHEAD (no faults)"
+  echo "═══════════════════════════════════════"
+  for MODEL in "${MODELS[@]}"; do
+    for METHOD in "${METHODS[@]}"; do
+      for BIT_LABEL in "${!BIT_MODES[@]}"; do
+        BIT_ARG="${BIT_MODES[$BIT_LABEL]}"
+        FI_ARGS="-r $REPEATS --max_batches $MAX_BATCHES --batch_size $BATCH_SIZE -w $WARMUP fi --faults 0"
+        [ -n "$BIT_ARG" ] && FI_ARGS="$FI_ARGS --bit_range $BIT_ARG"
+        run_and_merge "detection" \
+          -m "$MODEL" $FI_ARGS hr --method "$METHOD" --detect all
+      done
     done
   done
 fi

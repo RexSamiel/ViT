@@ -117,6 +117,8 @@ class ChainedArgumentParser:
                             help="Calibrate detection threshold from clean data and save for both methods")
         parser.add_argument("--layers", type=str, default="all",
                             choices=["all", "fc1", "fc2", "qkv", "proj", "attn"])
+        parser.add_argument("--shapes", action="store_true",
+                            help="Record and save linear layer input shapes (needed for input fault injection)")
         return parser
 
     def parse(self, argv=None):

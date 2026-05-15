@@ -49,6 +49,13 @@ def calibration_path(model_name: str, method: str) -> Path:
     return DATA_DIR / model_name / "calibration" / f"{method}.pt"
 
 
+def layer_shapes_path(model_name: str) -> Path:
+    """Linear layer input shapes — single file, always overwritten.
+    data/{model}/shapes/linear_inputs.pt
+    """
+    return DATA_DIR / model_name / "shapes" / "linear_inputs.pt"
+
+
 @dataclass
 class ModelConfig:
     """Configuration for model and data loading."""

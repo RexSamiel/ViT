@@ -79,13 +79,43 @@ def run(global_args, commands):
         from injection import Injector
 
         bit_range = parse_bit_range(fi_args.bit_range) if fi_args.bit_range else None
-        injector = Injector(model, layers=fi_args.layers, bit_range=bit_range, block_idx=fi_args.block, layer_prefix=getattr(fi_args, "layer_prefix", None))
+        injector = Injector(
+            model,
+            layers=fi_args.layers,
+            bit_range=bit_range,
+            block_idx=fi_args.block,
+            layer_prefix=getattr(fi_args, "layer_prefix", None),
+        )
         injector.fi_faults = fi_args.faults
         injector.fi_ber = fi_args.ber
         if detector:
             injector.refresh_layers()  # re-index after detector wrapped layers
         if global_args.info:
             injector.print_layer_info()
+
+    # Input activation injector — works standalone or alongside a detector
+    input_injector = None
+    if fi_args and getattr(fi_args, "input_faults", 0) > 0:
+        from injection.input_injector import InputInjector
+
+        input_bit_range = None
+        if getattr(fi_args, "input_bit_range", None):
+            from cli import parse_bit_range as _pbr
+
+            input_bit_range = _pbr(fi_args.input_bit_range)
+        elif fi_args and getattr(fi_args, "bit_range", None):
+            from cli import parse_bit_range as _pbr
+
+            input_bit_range = _pbr(fi_args.bit_range)
+
+        layer_shapes = model.layer_shapes.load()
+        if layer_shapes is None:
+            raise RuntimeError(
+                "Layer shapes not saved. Run first: python -m cli -m MODEL save --shapes"
+            )
+        input_injector = InputInjector(
+            model, layers=fi_args.layers, bit_range=input_bit_range, layer_shapes=layer_shapes
+        )
 
     # Fault-free logits for SDC comparison (not used in save/pa modes)
     ff_logits = (
@@ -142,27 +172,21 @@ def run(global_args, commands):
             if global_args.info:
                 injector.print_info()
 
-        # Arm input activation fault injection (after detector.reset(), before inference)
-        if (fi_args is not None and getattr(fi_args, "input_faults", 0) > 0
-                and detector is not None and hasattr(detector, "select_random_input_layers")):
-            input_bit_range = (
-                parse_bit_range(fi_args.input_bit_range)
-                if getattr(fi_args, "input_bit_range", None)
-                else bit_range
-            )
-            detector.select_random_input_layers(fi_args.input_faults, input_bit_range)
+        # Arm standalone input injector
+        if input_injector:
+            input_injector.arm(input_bit_range)
             if global_args.info:
-                print(f"Input fault armed in: {detector.get_input_injected_layers()}")
+                print(f"Input fault armed: layer={input_injector.faults[0].layer if input_injector.faults else 'pending'}")
 
         times_ms: list[float] = []
 
-        # ── MODEL RUNS ────────────────────────────────────────────────────────
+        # ── MODEL INFERECE ────────────────────────────────────────────────────────
         for batch_idx, (images, labels) in enumerate(batches):
             if device.type == "cuda":
                 torch.cuda.synchronize()
             t0 = time.perf_counter()
             with torch.inference_mode():
-                outputs = net(images)  # detector hooks fire here when active
+                outputs = net(images)
             if device.type == "cuda":
                 torch.cuda.synchronize()
             times_ms.append((time.perf_counter() - t0) * 1000)
@@ -204,11 +228,15 @@ def run(global_args, commands):
                 input_detected = set()
 
             input_injected_layers = (
-                set(detector.get_input_injected_layers())
-                if hasattr(detector, "get_input_injected_layers") else set()
+                {f.layer for f in input_injector.faults} if input_injector else set()
             )
 
-            for layer in injected_layers | weight_detected | input_detected | input_injected_layers:
+            for layer in (
+                injected_layers
+                | weight_detected
+                | input_detected
+                | input_injected_layers
+            ):
                 s = layer_stats.setdefault(
                     layer,
                     {
@@ -236,19 +264,17 @@ def run(global_args, commands):
 
             # Verbose per-run fault detail
             if global_args.info:
-                if hasattr(detector, "get_input_fault_details"):
-                    for d in detector.get_input_fault_details():
-                        print(
-                            f"Input fault @ {d['layer']}  "
-                            f"[b={d['b']}, token={d['n']}, feat={d['c']}]  "
-                            f"bit={d['bit']}  "
-                            f"{d['original']:.6e} → {d['corrupted']:.6e}"
-                        )
                 detector.print_results()
 
         if injector:
             run_data["faults"] = injector.get_info()
             injector.restore()
+
+        if input_injector:
+            if global_args.info:
+                input_injector.print_info()
+            run_data["input_faults"] = input_injector.get_info()
+            input_injector.restore()
 
         all_runs.append(run_data)
 
@@ -314,6 +340,23 @@ def run(global_args, commands):
             n = sum(b.shape[0] for b in logits_buf)
             model.ff_logits.save(logits_buf, labels_buf, n)
 
+        if save_args.shapes:
+            print("\nRecording layer input shapes...")
+            shapes = {}
+            handles = []
+            for name, module in net.named_modules():
+                if isinstance(module, torch.nn.Linear) and name and ".original" not in name:
+                    def _hook(m, inp, _name=name):
+                        shapes[_name] = tuple(inp[0].shape[1:])
+                    handles.append(module.register_forward_pre_hook(_hook))
+            images, _ = next(iter(model.dataloader))
+            images = images.to(device, non_blocking=True)
+            with torch.inference_mode():
+                net(images)
+            for h in handles:
+                h.remove()
+            model.layer_shapes.save(shapes)
+
         if save_args.threshold or save_args.inputs or save_args.weights:
             from detection import CheckOne, Checksum
 
@@ -353,7 +396,16 @@ def run(global_args, commands):
                 cs_zero.remove()
 
     if global_args.output and all_runs:
-        _save_json(global_args.output, all_runs, global_args, fi_args, hr_args, acc, sdc, layer_stats)
+        _save_json(
+            global_args.output,
+            all_runs,
+            global_args,
+            fi_args,
+            hr_args,
+            acc,
+            sdc,
+            layer_stats,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,7 +455,16 @@ def _print_timing(all_runs: list[dict], fi_args, global_args):
         )
 
 
-def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc, layer_stats: dict | None = None):
+def _save_json(
+    output_path: str,
+    all_runs: list[dict],
+    global_args,
+    fi_args,
+    hr_args,
+    acc,
+    sdc,
+    layer_stats: dict | None = None,
+):
     """Append an aggregated summary to the output JSON file."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,25 +478,34 @@ def _save_json(output_path: str, all_runs: list[dict], global_args, fi_args, hr_
         except (json.JSONDecodeError, OSError):
             pass
 
-    existing.append(_build_json_summary(all_runs, global_args, fi_args, hr_args, acc, sdc, layer_stats))
+    existing.append(
+        _build_json_summary(
+            all_runs, global_args, fi_args, hr_args, acc, sdc, layer_stats
+        )
+    )
 
     with open(path, "w") as f:
         json.dump(existing, f, indent=2)
     print(f"\nSaved results to {output_path}")
 
 
-def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc, sdc, layer_stats: dict | None = None) -> dict:
+def _build_json_summary(
+    all_runs: list[dict],
+    global_args,
+    fi_args,
+    hr_args,
+    acc,
+    sdc,
+    layer_stats: dict | None = None,
+) -> dict:
     """Build the plot-compatible aggregated summary dict."""
     import torch as _torch
+
     n: int = len(all_runs)
     summary: dict[str, object] = {"total_runs": n}
 
     # ── Run identity metadata ─────────────────────────────────────────────────
-    gpu_name = (
-        _torch.cuda.get_device_name(0)
-        if _torch.cuda.is_available()
-        else "cpu"
-    )
+    gpu_name = _torch.cuda.get_device_name(0) if _torch.cuda.is_available() else "cpu"
     method = getattr(hr_args, "method", None) if hr_args else None
     correction = getattr(hr_args, "correction", None) if hr_args else None
     bit_range_str = getattr(fi_args, "bit_range", None) if fi_args else None
@@ -470,28 +540,30 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
     if detection_runs:
         detected = sum(1 for d in detection_runs if d.get("weight_faults", 0) > 0)
         summary["detection_accuracy"] = round(100.0 * detected / len(detection_runs), 1)
-        fp = sum(s["false_positive"] for s in layer_stats.values()) if layer_stats else 0
+        fp = (
+            sum(s["false_positive"] for s in layer_stats.values()) if layer_stats else 0
+        )
         summary["false_positives"] = fp if layer_stats else None
 
         if input_faults_per_run > 0:
             # System-level: did ANY layer's input check fire?
             # Propagation detections in downstream layers are valid — not false positives.
             runs_with_input_detection = sum(
-                1 for r in all_runs
-                if r.get("detection", {}).get("input_faults", 0) > 0
+                1 for r in all_runs if r.get("detection", {}).get("input_faults", 0) > 0
             )
             summary["input_detection_accuracy"] = round(
                 100.0 * runs_with_input_detection / len(all_runs), 1
             )
         else:
             summary["input_detection_accuracy"] = None
-        summary["input_false_positives"] = None  # not measurable in fault injection runs
+        summary["input_false_positives"] = (
+            None  # not measurable in fault injection runs
+        )
     else:
         summary["detection_accuracy"] = None
         summary["false_positives"] = None
         summary["input_detection_accuracy"] = None
         summary["input_false_positives"] = None
-
 
     # ── Timing ────────────────────────────────────────────────────────────────
     all_batch_ms = [t for r in all_runs for t in r.get("times_ms", [])]
@@ -500,8 +572,12 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
     if all_batch_ms:
         avg_batch = sum(all_batch_ms) / len(all_batch_ms)
         std_batch = (
-            math.sqrt(sum((v - avg_batch) ** 2 for v in all_batch_ms) / (len(all_batch_ms) - 1))
-            if len(all_batch_ms) > 1 else 0.0
+            math.sqrt(
+                sum((v - avg_batch) ** 2 for v in all_batch_ms)
+                / (len(all_batch_ms) - 1)
+            )
+            if len(all_batch_ms) > 1
+            else 0.0
         )
         summary["batch_speed_mean_ms"] = round(avg_batch, 4)
         summary["batch_speed_std_ms"] = round(std_batch, 4)
@@ -526,6 +602,12 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
                 "avg_logit_sdc": avg_logit_sdc,
                 "std_logit_sdc": std_logit_sdc,
                 "avg_msdc": s["avg_msdc"],
+                "avg_magnitude_sdc": s["avg_magnitude_sdc"],
+                "min_magnitude": s["min_magnitude"],
+                "max_magnitude": s["max_magnitude"],
+                "median_msdc": s["median_msdc"],
+                "min_msdc": s["min_msdc"],
+                "max_msdc": s["max_msdc"],
                 "avg_critical_top1_sdc": s["avg_critical_top1"],
                 "std_critical_top1_sdc": s["std_critical_top1"],
                 "avg_critical_top5_sdc": s["avg_critical_top5"],
@@ -537,7 +619,9 @@ def _build_json_summary(all_runs: list[dict], global_args, fi_args, hr_args, acc
                 "safe_count": s["safe"],
                 "safe_pct": 100.0 * s["safe"] / n if n else 0.0,
                 "total_crash_samples": s["total_crash_samples"],
-                "crash_pct": 100.0 * s["total_crash_samples"] / s["total_eval_samples"] if s["total_eval_samples"] else 0.0,
+                "crash_pct": 100.0 * s["total_crash_samples"] / s["total_eval_samples"]
+                if s["total_eval_samples"]
+                else 0.0,
             }
         )
         for pct in [1, 5, 10, 15, 20, 25, 50]:

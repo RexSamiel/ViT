@@ -11,7 +11,7 @@ from timm.data.transforms_factory import create_transform
 from pathlib import Path
 
 from core.data import ImageNetDataset
-from core.config import ModelConfig, SUPPORTED_MODELS, logits_path
+from core.config import ModelConfig, SUPPORTED_MODELS, logits_path, layer_shapes_path
 
 
 class Model:
@@ -41,6 +41,7 @@ class Model:
         n_samples = config.batch_size * config.max_batches if config and config.max_batches else None
         split = "train" if (config and config.use_train) else "val"
         self._logits_cache = LogitsCache(name, n_samples, split=split)
+        self._layer_shapes_cache = LayerShapesCache(name)
 
     def _load_model(self) -> nn.Module:
         """Load pretrained model."""
@@ -125,6 +126,11 @@ class Model:
     def ff_logits(self) -> "LogitsCache":
         """Access fault-free logits cache."""
         return self._logits_cache
+
+    @property
+    def layer_shapes(self) -> "LayerShapesCache":
+        """Access linear layer input shapes cache."""
+        return self._layer_shapes_cache
 
     def save_baseline(self) -> None:
         """Run model on all batches and save fault-free logits for SDC comparison.
@@ -237,3 +243,25 @@ class LogitsCache:
     def available(self) -> bool:
         self._load()
         return self.data is not None
+
+
+class LayerShapesCache:
+    """Cache for linear layer input shapes used by the input fault injector."""
+
+    def __init__(self, model_key: str):
+        self.model_key = model_key
+        self._path = layer_shapes_path(model_key)
+
+    def save(self, shapes: dict[str, tuple]):
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(shapes, self._path)
+        print(f"✓ Saved layer shapes to {self._path}")
+
+    def load(self) -> dict[str, tuple] | None:
+        if self._path.exists():
+            return torch.load(self._path, weights_only=True)
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self._path.exists()
