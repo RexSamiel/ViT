@@ -179,6 +179,8 @@ def run(global_args, commands):
 
         # Arm standalone input injector
         if input_injector:
+            if fi_args is not None and fi_args.fault_seed is not None:
+                random.seed(fi_args.fault_seed + run_idx)
             input_injector.arm(input_bit_range)
             if global_args.info:
                 print(f"Input fault armed: layer={input_injector.faults[0].layer if input_injector.faults else 'pending'}")
