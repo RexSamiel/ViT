@@ -230,6 +230,9 @@ def run(global_args, commands):
             if hasattr(detector, "get_input_faults"):
                 weight_detected = {f.layer for f in detector.get_weight_faults()}
                 input_detected = {f.layer for f in detector.get_input_faults()}
+                # Pure input-fault run: suppress weight false positives
+                if input_injector and not injected_layers:
+                    weight_detected = set()
             else:
                 weight_detected = {f.layer for f in detector.get_faults()}
                 input_detected = set()

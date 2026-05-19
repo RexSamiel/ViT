@@ -321,6 +321,10 @@ class Checksum:
         """Localised weight faults (column check hits)."""
         return [f for f in self.get_faults() if f.fault_type == "col_check"]
 
+    def get_input_faults(self) -> list[DetectedFault]:
+        """Input fault detections — any check failure counts when input is corrupted."""
+        return self.get_faults()
+
     def get_detection_flags(self) -> list[DetectedFault]:
         """Raw row-check failures (fault present, column not yet identified)."""
         return [f for f in self.get_faults() if f.fault_type == "row_check"]
@@ -616,10 +620,12 @@ class Checksum:
         col_faults = [f for f in faults if f.fault_type == "col_check"]
         row_faults = [f for f in faults if f.fault_type == "row_check"]
 
+        any_layers = len({f.layer for f in faults})
         return {
             "method": self.name,
             "layers_checked": len(self.wrapped),
-            "weight_faults": len({f.layer for f in faults}),
+            "weight_faults": any_layers,
+            "input_faults": any_layers,
             "row_check_failures": len(row_faults),
             "faults": [
                 {

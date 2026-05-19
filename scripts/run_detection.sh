@@ -162,7 +162,7 @@ if $INJECT_INPUT_FAULTS; then
   for MODEL in "${MODELS[@]}"; do
     for INPUT_BIT_LABEL in "${!INPUT_BIT_MODES[@]}"; do
       INPUT_BIT_ARG="${INPUT_BIT_MODES[$INPUT_BIT_LABEL]}"
-      FI_ARGS="$COMMON fi --faults 0 --input_faults 1"
+      FI_ARGS="$COMMON fi --faults 0 --input_faults 1 --fault_seed $FAULT_SEED"
       [ -n "$INPUT_BIT_ARG" ] && FI_ARGS="$FI_ARGS --input_bit_range $INPUT_BIT_ARG"
 
       if $RUN_BASELINE; then
