@@ -51,7 +51,8 @@ class InputInjector:
 
         self._layer_names: list[str] = list(self._layers.keys())
         self._layer_sizes: list[int] = [
-            self._layers[n].in_features for n in self._layer_names
+            getattr(self._layers[n], "original", self._layers[n]).in_features
+            for n in self._layer_names
         ]
 
         self._cumulative: list[int] = []
@@ -70,10 +71,14 @@ class InputInjector:
         self._hooks: list = []
         self.faults: list[InjectedInputFault] = []
 
-    def _get_layers(self) -> dict[str, nn.Linear]:
+    def _get_layers(self) -> dict[str, nn.Module]:
         layers = {}
         for name, module in self.model.named_modules():
-            if isinstance(module, nn.Linear) and name and ".original" not in name:
+            if not name or ".original" in name:
+                continue
+            if isinstance(module, nn.Linear):
+                layers[name] = module
+            elif hasattr(module, "original") and isinstance(module.original, nn.Linear):
                 layers[name] = module
         layers = filter_layers(layers, self.layer_filter)
         if self.block_idx is not None:
